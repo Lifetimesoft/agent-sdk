@@ -16,8 +16,8 @@ export interface AiProvider {
  * Key-value storage interface for persisting agent state.
  */
 export interface StorageProvider {
-  get(key: string): Promise<any>
-  set(key: string, value: any, opts?: { ttl?: number }): Promise<void>
+  get<T = unknown>(key: string): Promise<T | null>
+  set<T = unknown>(key: string, value: T, opts?: { ttl?: number }): Promise<void>
   delete(key: string): Promise<void>
 }
 
@@ -25,16 +25,16 @@ export interface StorageProvider {
  * Queue interface for pushing messages/tasks.
  */
 export interface QueueProvider {
-  push(data: any): Promise<void>
+  push<T = unknown>(data: T): Promise<void>
 }
 
 /**
  * Logger interface for structured agent logging.
  */
 export interface Logger {
-  info(...args: any[]): void
-  error(...args: any[]): void
-  debug?(...args: any[]): void
+  info(...args: unknown[]): void
+  error(...args: unknown[]): void
+  debug?(...args: unknown[]): void
 }
 
 /**
@@ -53,13 +53,13 @@ export interface AgentConfig {
   agent: string
   version: string
   interval?: number
-  [key: string]: any
+  [key: string]: unknown
 }
 
 /**
  * The full context object injected into every agent run.
  */
-export interface Context<TInput = any> {
+export interface Context<TInput = unknown> {
   /** Arbitrary input payload passed to this run */
   input: TInput
 
@@ -88,7 +88,7 @@ export interface Context<TInput = any> {
 /**
  * The agent definition object passed to `defineAgent()`.
  */
-export interface AgentDefinition<TInput = any, TOutput = any> {
+export interface AgentDefinition<TInput = unknown, TOutput = unknown> {
   /**
    * The main entry point for the agent.
    * Receives the runtime context and returns an optional output.
@@ -100,7 +100,7 @@ export interface AgentDefinition<TInput = any, TOutput = any> {
  * The resolved agent object returned by `defineAgent()`.
  * This is what the `lifectl` runtime expects to receive.
  */
-export interface Agent<TInput = any, TOutput = any> {
+export interface Agent<TInput = unknown, TOutput = unknown> {
   run(ctx: Context<TInput>): Promise<TOutput>
   __isAgent: true
 }

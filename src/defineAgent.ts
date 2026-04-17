@@ -19,7 +19,7 @@ import type { Agent, AgentDefinition } from "./types"
  * })
  * ```
  */
-export function defineAgent<TInput = any, TOutput = any>(
+export function defineAgent<TInput = unknown, TOutput = unknown>(
   definition: AgentDefinition<TInput, TOutput>
 ): Agent<TInput, TOutput> {
   if (typeof definition.run !== "function") {
