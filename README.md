@@ -230,7 +230,7 @@ This SDK is designed to support:
 
 ## 🧩 Related Tools
 
-* `lifectl` – CLI for running and managing agents
+* [`lifectl`](https://www.npmjs.com/package/@lifetimesoft/lifectl) – CLI for running and managing agents
 * SaaS Platform – Control plane (API, config, monitoring)
 
 ---
