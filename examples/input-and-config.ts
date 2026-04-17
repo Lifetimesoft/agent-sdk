@@ -29,8 +29,13 @@ export default defineAgent<Input>({
       return { error: "input.text is required" }
     }
 
+    const tone = config.tone ?? "neutral"
+
     const reply = await ctx.ai.chat({
-      prompt: `Reply in a ${config.tone ?? "neutral"} tone: ${input.text}`,
+      messages: [
+        { role: "system", content: `You reply in a ${tone} tone.` },
+        { role: "user", content: input.text },
+      ],
     })
 
     ctx.log.info("Replied with tone:", config.tone)

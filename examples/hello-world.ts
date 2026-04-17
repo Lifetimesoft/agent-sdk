@@ -11,7 +11,7 @@ import { defineAgent } from "../src"
 export default defineAgent({
   async run(ctx) {
     const reply = await ctx.ai.chat({
-      prompt: "Say hello to the world in one sentence.",
+      messages: [{ role: "user", content: "Say hello to the world in one sentence." }],
     })
 
     ctx.log.info("AI reply:", reply)

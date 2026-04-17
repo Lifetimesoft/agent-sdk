@@ -30,6 +30,8 @@ describe("createMockContext()", () => {
     expect(ctx.env.API_KEY).toBe("secret")
   })
 
+  // --- storage ---
+
   it("storage: get returns null for missing keys", async () => {
     const ctx = createMockContext()
     const val = await ctx.storage.get("missing")
@@ -51,14 +53,53 @@ describe("createMockContext()", () => {
     expect(val).toBeNull()
   })
 
-  it("queue: push stores messages", async () => {
-    const pushed: unknown[] = []
-    const ctx = createMockContext({
-      queue: { push: async (data) => { pushed.push(data) } },
-    })
-    await ctx.queue.push({ event: "test" })
-    expect(pushed).toEqual([{ event: "test" }])
+  it("storage: _getStore() returns all stored entries", async () => {
+    const ctx = createMockContext()
+    await ctx.storage.set("a", 1)
+    await ctx.storage.set("b", 2)
+    expect(ctx.storage._getStore()).toEqual({ a: 1, b: 2 })
   })
+
+  it("storage: TTL — entry is evicted after expiry", async () => {
+    const ctx = createMockContext()
+    await ctx.storage.set("temp", "value", { ttl: 0 }) // 0s TTL expires immediately
+    // Force expiry by waiting a tick
+    await new Promise((r) => setTimeout(r, 1))
+    const val = await ctx.storage.get("temp")
+    expect(val).toBeNull()
+  })
+
+  it("storage: TTL — entry is accessible before expiry", async () => {
+    const ctx = createMockContext()
+    await ctx.storage.set("temp", "value", { ttl: 60 }) // 60s TTL
+    const val = await ctx.storage.get("temp")
+    expect(val).toBe("value")
+  })
+
+  // --- queue ---
+
+  it("queue: push stores messages", async () => {
+    const ctx = createMockContext()
+    await ctx.queue.push({ event: "test" })
+    expect(ctx.queue._getMessages()).toEqual([{ event: "test" }])
+  })
+
+  it("queue: _getMessages() returns all pushed messages in order", async () => {
+    const ctx = createMockContext()
+    await ctx.queue.push({ event: "first" })
+    await ctx.queue.push({ event: "second" })
+    expect(ctx.queue._getMessages()).toEqual([{ event: "first" }, { event: "second" }])
+  })
+
+  it("queue: _getMessages() returns a copy, not the internal array", async () => {
+    const ctx = createMockContext()
+    await ctx.queue.push({ event: "test" })
+    const messages = ctx.queue._getMessages()
+    messages.push({ event: "injected" })
+    expect(ctx.queue._getMessages()).toHaveLength(1)
+  })
+
+  // --- log ---
 
   it("log: uses console by default", () => {
     const infoSpy = vi.spyOn(console, "log").mockImplementation(() => {})
@@ -75,20 +116,32 @@ describe("createMockContext()", () => {
     expect(mockInfo).toHaveBeenCalledWith("test message")
   })
 
+  it("log: debug uses console.debug by default", () => {
+    const debugSpy = vi.spyOn(console, "debug").mockImplementation(() => {})
+    const ctx = createMockContext()
+    ctx.log.debug("debug message")
+    expect(debugSpy).toHaveBeenCalledWith("[agent:debug]", "debug message")
+    debugSpy.mockRestore()
+  })
+
+  // --- ai ---
+
   it("ai.chat: throws by default (not implemented)", async () => {
     const ctx = createMockContext()
-    await expect(ctx.ai.chat({ prompt: "hello" })).rejects.toThrow(
-      "ctx.ai.chat() is not implemented in mock context"
-    )
+    await expect(
+      ctx.ai.chat({ messages: [{ role: "user", content: "hello" }] })
+    ).rejects.toThrow("ctx.ai.chat() is not implemented in mock context")
   })
 
   it("ai.chat: can be overridden with mock", async () => {
     const ctx = createMockContext({
       ai: { chat: async () => "mocked response" },
     })
-    const result = await ctx.ai.chat({ prompt: "hello" })
+    const result = await ctx.ai.chat({ messages: [{ role: "user", content: "hello" }] })
     expect(result).toBe("mocked response")
   })
+
+  // --- meta ---
 
   it("meta: can be partially overridden", () => {
     const ctx = createMockContext({

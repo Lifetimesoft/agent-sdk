@@ -1,12 +1,20 @@
 /**
+ * A single message in a chat conversation.
+ */
+export interface ChatMessage {
+  role: "system" | "user" | "assistant"
+  content: string
+}
+
+/**
  * AI provider interface for interacting with language models.
  */
 export interface AiProvider {
   /**
-   * Send a chat prompt and receive a text response.
+   * Send a chat conversation and receive a text response.
    */
   chat(req: {
-    prompt: string
+    messages: ChatMessage[]
     model?: string
     temperature?: number
   }): Promise<string>
@@ -34,7 +42,7 @@ export interface QueueProvider {
 export interface Logger {
   info(...args: unknown[]): void
   error(...args: unknown[]): void
-  debug?(...args: unknown[]): void
+  debug(...args: unknown[]): void
 }
 
 /**
@@ -90,6 +98,18 @@ export interface Context<TInput = unknown> {
  */
 export interface AgentDefinition<TInput = unknown, TOutput = unknown> {
   /**
+   * Optional schema for validating the input payload.
+   * The runtime will use this to validate input before calling `run()`.
+   */
+  inputSchema?: unknown
+
+  /**
+   * Optional schema for validating the agent config.
+   * The runtime will use this to validate config before calling `run()`.
+   */
+  configSchema?: unknown
+
+  /**
    * The main entry point for the agent.
    * Receives the runtime context and returns an optional output.
    */
@@ -102,5 +122,7 @@ export interface AgentDefinition<TInput = unknown, TOutput = unknown> {
  */
 export interface Agent<TInput = unknown, TOutput = unknown> {
   run(ctx: Context<TInput>): Promise<TOutput>
+  inputSchema?: unknown
+  configSchema?: unknown
   __isAgent: true
 }

@@ -51,4 +51,22 @@ describe("defineAgent()", () => {
     const ctx = createMockContext()
     await expect(agent.run(ctx)).rejects.toThrow("agent error")
   })
+
+  it("preserves inputSchema on the returned agent", () => {
+    const schema = { type: "object", properties: { text: { type: "string" } } }
+    const agent = defineAgent({ inputSchema: schema, async run() {} })
+    expect(agent.inputSchema).toBe(schema)
+  })
+
+  it("preserves configSchema on the returned agent", () => {
+    const schema = { type: "object", properties: { tone: { type: "string" } } }
+    const agent = defineAgent({ configSchema: schema, async run() {} })
+    expect(agent.configSchema).toBe(schema)
+  })
+
+  it("inputSchema and configSchema are undefined when not provided", () => {
+    const agent = defineAgent({ async run() {} })
+    expect(agent.inputSchema).toBeUndefined()
+    expect(agent.configSchema).toBeUndefined()
+  })
 })

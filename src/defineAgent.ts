@@ -12,7 +12,9 @@ import type { Agent, AgentDefinition } from "./types"
  *
  * export default defineAgent({
  *   async run(ctx) {
- *     const reply = await ctx.ai.chat({ prompt: "Say hello to the world" })
+ *     const reply = await ctx.ai.chat({
+ *       messages: [{ role: "user", content: "Say hello to the world" }]
+ *     })
  *     ctx.log.info("AI reply:", reply)
  *     return { text: reply }
  *   }
@@ -30,6 +32,8 @@ export function defineAgent<TInput = unknown, TOutput = unknown>(
 
   return {
     run: definition.run,
+    inputSchema: definition.inputSchema,
+    configSchema: definition.configSchema,
     __isAgent: true,
   }
 }

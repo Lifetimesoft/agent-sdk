@@ -36,21 +36,19 @@ npm install @lifetimesoft/agent-sdk
 
 ## ✨ Quick Example
 
-```js
+```ts
 import { defineAgent } from "@lifetimesoft/agent-sdk"
 
-export default defineAgent({
+export default defineAgent<{ text: string }, { reply: string }>({
   async run(ctx) {
     const reply = await ctx.ai.chat({
-      prompt: `Say hello to the world`
+      messages: [{ role: "user", content: `Say hello to: ${ctx.input.text}` }],
     })
 
     ctx.log.info("AI reply:", reply)
 
-    return {
-      text: reply
-    }
-  }
+    return { reply }
+  },
 })
 ```
 
@@ -64,39 +62,39 @@ The `ctx` object is injected by the runtime (via `lifectl`) and provides everyth
 
 ```ts
 type Context = {
-  input: any
+  input: unknown
 
   config: {
     agent: string
     version: string
     interval?: number
-    [key: string]: any
+    [key: string]: unknown
   }
 
   env: Record<string, string>
 
   ai: {
     chat: (req: {
-      prompt: string
+      messages: Array<{ role: "system" | "user" | "assistant"; content: string }>
       model?: string
       temperature?: number
     }) => Promise<string>
   }
 
   storage: {
-    get: (key: string) => Promise<any>
-    set: (key: string, value: any, opts?: { ttl?: number }) => Promise<void>
+    get: <T>(key: string) => Promise<T | null>
+    set: <T>(key: string, value: T, opts?: { ttl?: number }) => Promise<void>
     delete: (key: string) => Promise<void>
   }
 
   queue: {
-    push: (data: any) => Promise<void>
+    push: <T>(data: T) => Promise<void>
   }
 
   log: {
-    info: (...args: any[]) => void
-    error: (...args: any[]) => void
-    debug?: (...args: any[]) => void
+    info: (...args: unknown[]) => void
+    error: (...args: unknown[]) => void
+    debug: (...args: unknown[]) => void
   }
 
   meta: {
@@ -114,12 +112,19 @@ type Context = {
 ### `defineAgent()`
 
 Wrap your agent definition.
+You can pass generic types for input and output: `defineAgent<TInput, TOutput>({...})`.
 
 ```ts
 defineAgent({
+  // Optional: schema for validating input before run() is called
+  inputSchema: { /* your schema */ },
+
+  // Optional: schema for validating agent config before run() is called
+  configSchema: { /* your schema */ },
+
   async run(ctx) {
     // your logic here
-  }
+  },
 })
 ```
 
@@ -127,20 +132,53 @@ defineAgent({
 
 ## 🧪 Example: Using Input + Config
 
-```js
+```ts
 export default defineAgent({
   async run(ctx) {
     const { input, config } = ctx
+    const tone = (config.tone as string) ?? "neutral"
 
     const reply = await ctx.ai.chat({
-      prompt: `Reply in a ${config.tone} tone: ${input.text}`
+      messages: [
+        { role: "system", content: `You reply in a ${tone} tone.` },
+        { role: "user", content: (input as { text: string }).text },
+      ],
     })
 
-    return {
-      text: reply
-    }
-  }
+    return { text: reply }
+  },
 })
+```
+
+---
+
+## 🧪 Testing
+
+Use `createMockContext()` from `@lifetimesoft/agent-sdk/testing` to test agents locally without the `lifectl` runtime.
+
+```ts
+import { createMockContext } from "@lifetimesoft/agent-sdk/testing"
+import myAgent from "./my-agent"
+
+const ctx = createMockContext({
+  input: { text: "hello" },
+  ai: {
+    chat: async () => "mocked AI response",
+  },
+})
+
+const result = await myAgent.run(ctx)
+console.log(result)
+```
+
+The mock context also exposes inspection helpers:
+
+```ts
+// Inspect storage state after run
+const store = ctx.storage._getStore()
+
+// Inspect all messages pushed to the queue
+const messages = ctx.queue._getMessages()
 ```
 
 ---
@@ -156,7 +194,7 @@ export default defineAgent({
 
 ---
 
-### ❌ Don’t
+### ❌ Don't
 
 * Call SaaS APIs directly (`fetch(...)`)
 * Implement your own heartbeat or polling
@@ -199,7 +237,7 @@ This SDK is designed to support:
 
 ## 📄 License
 
-MIT
+Apache-2.0 license
 
 ---
 
