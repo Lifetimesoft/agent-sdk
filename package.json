@@ -18,6 +18,11 @@
             "types": "./dist/testing.d.ts",
             "import": "./dist/testing.mjs",
             "require": "./dist/testing.js"
+        },
+        "./runtime": {
+            "types": "./dist/runtime.d.ts",
+            "import": "./dist/runtime.mjs",
+            "require": "./dist/runtime.js"
         }
     },
     "files": [
