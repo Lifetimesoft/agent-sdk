@@ -46,12 +46,27 @@ export interface Logger {
 }
 
 /**
+ * Runtime configuration injected by the platform into ctx.meta.
+ * Contains URLs and settings the runtime needs — agent code never reads this.
+ */
+export interface RuntimeConfig {
+  /** URL to POST heartbeat to every interval */
+  heartbeat_url: string
+  /** URL to POST when agent stops */
+  stopped_url: string
+  /** Heartbeat interval in milliseconds */
+  heartbeat_interval_ms: number
+}
+
+/**
  * Metadata about the current agent run, injected by the runtime.
  */
 export interface RunMeta {
   job_id?: string
   run_id: string
   timestamp: number
+  /** Runtime configuration — used by the runtime wrapper, not by agent code */
+  runtime?: RuntimeConfig
 }
 
 /**

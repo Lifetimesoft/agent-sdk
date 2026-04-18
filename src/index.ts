@@ -17,4 +17,5 @@ export type {
   QueueProvider,
   Logger,
   RunMeta,
+  RuntimeConfig,
 } from "./types"
