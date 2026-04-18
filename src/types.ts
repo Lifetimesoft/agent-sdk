@@ -50,8 +50,8 @@ export interface Logger {
  * Contains URLs and settings the runtime needs — agent code never reads this.
  */
 export interface RuntimeConfig {
-  /** URL to POST heartbeat to every interval */
-  heartbeat_url: string
+  /** WebSocket URL for heartbeat connection */
+  ws_url: string
   /** URL to POST when agent stops */
   stopped_url: string
   /** Heartbeat interval in milliseconds */

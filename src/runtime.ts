@@ -114,53 +114,89 @@ async function main(): Promise<void> {
 
   const agentRun = (agent as { run: (ctx: Context) => Promise<unknown> }).run
 
-  // start heartbeat — URL comes from ctx.meta.runtime, not hardcoded
-  const heartbeatTimer = runtimeCfg
-    ? startHeartbeat(runId, runtimeCfg, accessToken)
+  // connect WebSocket for heartbeat — URL comes from ctx.meta.runtime
+  const wsConnection = runtimeCfg
+    ? startWebSocketHeartbeat(runId, runtimeCfg, accessToken)
     : null
 
   // graceful shutdown
   const shutdown = async (signal: string): Promise<void> => {
     console.log(`[runtime] ${signal} received, shutting down...`)
-    if (heartbeatTimer) clearInterval(heartbeatTimer)
+    wsConnection?.close()
     await notifyStopped(runId, runtimeCfg, accessToken)
     process.exit(0)
   }
   process.on("SIGTERM", () => { void shutdown("SIGTERM") })
   process.on("SIGINT", () => { void shutdown("SIGINT") })
 
-  // run the agent — heartbeat runs in background via setInterval
+  // run the agent — heartbeat runs in background via WebSocket
   try {
     await agentRun(ctx)
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : String(e)
     console.error("[runtime] agent.run() threw:", msg)
-    if (heartbeatTimer) clearInterval(heartbeatTimer)
+    wsConnection?.close()
     await notifyStopped(runId, runtimeCfg, accessToken, msg)
     process.exit(1)
   }
 
   // run() completed normally
-  if (heartbeatTimer) clearInterval(heartbeatTimer)
+  wsConnection?.close()
   await notifyStopped(runId, runtimeCfg, accessToken)
 }
 
-// ─── Heartbeat ────────────────────────────────────────────────────────────────
+// ─── WebSocket Heartbeat ──────────────────────────────────────────────────────
 
-function startHeartbeat(
+function startWebSocketHeartbeat(
   runId: string,
   cfg: RuntimeConfig,
   accessToken: string | undefined
-): ReturnType<typeof setInterval> {
-  const interval = setInterval(() => {
-    void post(cfg.heartbeat_url, { run_id: runId, status: 1 }, accessToken).catch(() => {
-      // heartbeat failure is non-fatal — agent keeps running
-    })
-  }, cfg.heartbeat_interval_ms)
+): WebSocket {
+  const wsUrl = accessToken
+    ? `${cfg.ws_url}?token=${encodeURIComponent(accessToken)}&run_id=${encodeURIComponent(runId)}`
+    : `${cfg.ws_url}?run_id=${encodeURIComponent(runId)}`
 
-  // do not keep process alive just for heartbeat
-  interval.unref()
-  return interval
+  let ws: WebSocket
+  let heartbeatTimer: ReturnType<typeof setInterval> | null = null
+
+  const connect = (): void => {
+    ws = new WebSocket(wsUrl)
+
+    ws.addEventListener("open", () => {
+      console.log("[runtime] WebSocket connected")
+      // send heartbeat every interval
+      heartbeatTimer = setInterval(() => {
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ type: "heartbeat", run_id: runId, status: 1, timestamp: Math.floor(Date.now() / 1000) }))
+        }
+      }, cfg.heartbeat_interval_ms)
+      // setInterval does not keep Node.js alive
+      heartbeatTimer.unref()
+    })
+
+    ws.addEventListener("close", () => {
+      if (heartbeatTimer) { clearInterval(heartbeatTimer); heartbeatTimer = null }
+      // reconnect after 5s — agent is still running
+      setTimeout(connect, 5_000).unref()
+    })
+
+    ws.addEventListener("error", () => {
+      // error will be followed by close — reconnect handled there
+    })
+  }
+
+  connect()
+
+  // return a proxy object with close() to stop reconnecting
+  let closed = false
+  return {
+    close: () => {
+      closed = true
+      if (heartbeatTimer) { clearInterval(heartbeatTimer); heartbeatTimer = null }
+      ws?.close()
+    },
+    get readyState() { return ws?.readyState ?? WebSocket.CLOSED },
+  } as unknown as WebSocket
 }
 
 async function notifyStopped(
@@ -182,10 +218,10 @@ function buildStorageProvider(
   cfg: RuntimeConfig | undefined,
   accessToken: string | undefined
 ) {
-  // derive storage base URL from heartbeat_url
-  // e.g. .../agents/heartbeat → .../agents
-  const base = cfg?.heartbeat_url
-    ? cfg.heartbeat_url.replace(/\/heartbeat$/, "")
+  // derive storage base URL from stopped_url
+  // e.g. .../agents/stopped → .../agents
+  const base = cfg?.stopped_url
+    ? cfg.stopped_url.replace(/\/stopped$/, "")
     : null
 
   return {
