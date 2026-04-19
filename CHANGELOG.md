@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.0.2] - 2026-04-19
+
+### Changed
+
+- Replaced `require("fs")` with a top-level `import fs from "fs"` in `runtime.ts` to fix `@typescript-eslint/consistent-type-imports` lint error
+
+### Removed
+
+- GitHub Actions CI workflow (`.github/workflows/ci.yml`)
+
+---
+
 ## [0.0.1] - 2026-04-18
 
 ### Added
