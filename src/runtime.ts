@@ -16,6 +16,7 @@
  * Heartbeat URLs come from SaaS so changing them requires no SDK update.
  */
 
+import fs from "fs"
 import path from "path"
 import type { Context, RuntimeConfig } from "./types"
 
@@ -78,15 +79,13 @@ async function main(): Promise<void> {
   // 3. fallback: dist/index.js
   let entrypoint = "dist/index.js"
   try {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const readFileSync = (require("fs") as typeof import("fs")).readFileSync
     const agentJsonPath = path.resolve(process.cwd(), "agent.json")
-    const agentJson = JSON.parse(readFileSync(agentJsonPath, "utf-8"))
+    const agentJson = JSON.parse(fs.readFileSync(agentJsonPath, "utf-8"))
     if (agentJson.main) {
       entrypoint = agentJson.main
     } else {
       const pkgPath = path.resolve(process.cwd(), "package.json")
-      const pkg = JSON.parse(readFileSync(pkgPath, "utf-8"))
+      const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf-8"))
       if (pkg.main) entrypoint = pkg.main
     }
   } catch { /* use fallback */ }
