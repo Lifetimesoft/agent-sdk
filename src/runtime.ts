@@ -55,9 +55,9 @@ async function main(): Promise<void> {
   const ctx: Context = {
     ...ctxBase,
     log: {
-      info: (...args: unknown[]) => console.log("[agent:info]", ...args),
-      error: (...args: unknown[]) => console.error("[agent:error]", ...args),
-      debug: (...args: unknown[]) => console.debug("[agent:debug]", ...args),
+      info:  (...args: unknown[]) => console.log(`[${new Date().toISOString()}] [agent:info]`, ...args),
+      error: (...args: unknown[]) => console.error(`[${new Date().toISOString()}] [agent:error]`, ...args),
+      debug: (...args: unknown[]) => console.debug(`[${new Date().toISOString()}] [agent:debug]`, ...args),
     },
     ai: {
       chat: async () => {
