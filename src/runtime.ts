@@ -147,37 +147,48 @@ async function main(): Promise<void> {
 
 // ─── WebSocket Heartbeat ──────────────────────────────────────────────────────
 
+const APP_URL = "https://app.lifetimesoft.com"
+
 function startWebSocketHeartbeat(
   runId: string,
   cfg: RuntimeConfig,
   accessToken: string | undefined
 ): WebSocket {
-  const wsUrl = accessToken
-    ? `${cfg.ws_url}?token=${encodeURIComponent(accessToken)}&run_id=${encodeURIComponent(runId)}`
-    : `${cfg.ws_url}?run_id=${encodeURIComponent(runId)}`
+  // track current token — may be refreshed on reconnect
+  let currentToken = accessToken
 
   let ws: WebSocket
   let heartbeatTimer: ReturnType<typeof setInterval> | null = null
+  let stopped = false
 
-  const connect = (): void => {
+  const connect = async (): Promise<void> => {
+    if (stopped) return
+
+    // refresh token before connecting if we have a refresh token
+    currentToken = await refreshTokenIfNeeded(currentToken) ?? currentToken
+
+    const wsUrl = currentToken
+      ? `${cfg.ws_url}?token=${encodeURIComponent(currentToken)}&run_id=${encodeURIComponent(runId)}`
+      : `${cfg.ws_url}?run_id=${encodeURIComponent(runId)}`
+
     ws = new WebSocket(wsUrl)
 
     ws.addEventListener("open", () => {
       console.log("[runtime] WebSocket connected")
-      // send heartbeat every interval
       heartbeatTimer = setInterval(() => {
         if (ws.readyState === WebSocket.OPEN) {
           ws.send(JSON.stringify({ type: "heartbeat", run_id: runId, status: 1, timestamp: Math.floor(Date.now() / 1000) }))
         }
       }, cfg.heartbeat_interval_ms)
-      // setInterval does not keep Node.js alive
       heartbeatTimer.unref()
     })
 
-    ws.addEventListener("close", () => {
+    ws.addEventListener("close", (event) => {
       if (heartbeatTimer) { clearInterval(heartbeatTimer); heartbeatTimer = null }
-      // reconnect after 5s — agent is still running
-      setTimeout(connect, 5_000).unref()
+      if (stopped) return
+      // reconnect after 5s — refresh token in case it expired
+      console.log(`[runtime] WebSocket closed (${event.code}), reconnecting in 5s...`)
+      setTimeout(() => { void connect() }, 5_000).unref()
     })
 
     ws.addEventListener("error", () => {
@@ -185,18 +196,66 @@ function startWebSocketHeartbeat(
     })
   }
 
-  connect()
+  void connect()
 
-  // return a proxy object with close() to stop reconnecting
-  let closed = false
   return {
     close: () => {
-      closed = true
+      stopped = true
       if (heartbeatTimer) { clearInterval(heartbeatTimer); heartbeatTimer = null }
       ws?.close()
     },
     get readyState() { return ws?.readyState ?? WebSocket.CLOSED },
   } as unknown as WebSocket
+}
+
+/**
+ * Attempt to refresh the access token using the refresh token stored in AGENT_REFRESH_TOKEN env.
+ * Returns the new access token if successful, or undefined if refresh is not possible.
+ */
+async function refreshTokenIfNeeded(currentToken: string | undefined): Promise<string | undefined> {
+  const refreshToken = process.env.AGENT_REFRESH_TOKEN
+  if (!refreshToken || !currentToken) return currentToken
+
+  // check if token is expired (JWT payload.exp)
+  try {
+    const payload = JSON.parse(Buffer.from(currentToken.split(".")[1], "base64url").toString())
+    const isExpired = Math.floor(Date.now() / 1000) >= payload.exp
+    if (!isExpired) return currentToken // still valid, no need to refresh
+  } catch {
+    // can't parse token — try refresh anyway
+  }
+
+  try {
+    const res = await fetch(`${APP_URL}/cli-login/refresh`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Requested-With": "lifectl-cli",
+      },
+      body: JSON.stringify({
+        access_token: currentToken,
+        refresh_token: refreshToken,
+      }),
+    })
+
+    if (!res.ok) {
+      console.error("[runtime] Token refresh failed:", res.status)
+      return currentToken
+    }
+
+    const data = await res.json() as { access_token?: string; refresh_token?: string }
+    if (data.access_token) {
+      console.log("[runtime] Token refreshed successfully")
+      // update env vars so future reconnects use the new tokens
+      process.env.AGENT_ACCESS_TOKEN = data.access_token
+      if (data.refresh_token) process.env.AGENT_REFRESH_TOKEN = data.refresh_token
+      return data.access_token
+    }
+  } catch (e) {
+    console.error("[runtime] Token refresh error:", e)
+  }
+
+  return currentToken
 }
 
 async function notifyStopped(
