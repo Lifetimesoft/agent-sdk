@@ -206,11 +206,12 @@ const messages = ctx.queue._getMessages()
 
 The SDK is designed to work with the `lifectl` CLI, which automatically manages:
 
-* Heartbeat
+* **WebSocket heartbeat** — persistent connection to SaaS, hibernates between messages (no polling overhead)
+* **Offline detection** — immediate when connection drops, no polling delay
 * Config updates
 * Logging (batched)
 * Error handling
-* Retry logic
+* Retry logic with automatic WebSocket reconnect
 
 👉 You only implement `run(ctx)`
 
