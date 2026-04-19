@@ -62,7 +62,6 @@ export interface RuntimeConfig {
  * Metadata about the current agent run, injected by the runtime.
  */
 export interface RunMeta {
-  job_id?: string
   run_id: string
   timestamp: number
   /** Runtime configuration — used by the runtime wrapper, not by agent code */
