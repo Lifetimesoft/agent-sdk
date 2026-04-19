@@ -78,13 +78,15 @@ async function main(): Promise<void> {
   // 3. fallback: dist/index.js
   let entrypoint = "dist/index.js"
   try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const readFileSync = (require("fs") as typeof import("fs")).readFileSync
     const agentJsonPath = path.resolve(process.cwd(), "agent.json")
-    const agentJson = JSON.parse(require("fs").readFileSync(agentJsonPath, "utf-8"))
+    const agentJson = JSON.parse(readFileSync(agentJsonPath, "utf-8"))
     if (agentJson.main) {
       entrypoint = agentJson.main
     } else {
       const pkgPath = path.resolve(process.cwd(), "package.json")
-      const pkg = JSON.parse(require("fs").readFileSync(pkgPath, "utf-8"))
+      const pkg = JSON.parse(readFileSync(pkgPath, "utf-8"))
       if (pkg.main) entrypoint = pkg.main
     }
   } catch { /* use fallback */ }
