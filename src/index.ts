@@ -10,6 +10,7 @@ export type {
   Agent,
   AgentDefinition,
   AgentConfig,
+  SchedulerConfig,
   ChatMessage,
   Context,
   AiProvider,

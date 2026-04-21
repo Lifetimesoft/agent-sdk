@@ -5,6 +5,7 @@ import type {
   Logger,
   QueueProvider,
   RunMeta,
+  SchedulerConfig,
   StorageProvider,
 } from "./types"
 
@@ -129,6 +130,7 @@ export function createMockContext<TInput = unknown>(
   const defaultConfig: AgentConfig = {
     agent: "mock-agent",
     version: "0.0.0",
+    scheduler: { type: "none" } as SchedulerConfig,
     ...config,
   }
 
