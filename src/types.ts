@@ -69,12 +69,26 @@ export interface RunMeta {
 }
 
 /**
+ * Scheduler configuration for the agent, sourced from the database via the platform.
+ * The agent never configures this directly — it is injected into ctx.config.scheduler.
+ *
+ * - `none`     — run once, no repeat
+ * - `interval` — repeat every `value` milliseconds
+ * - `cron`     — repeat on a cron expression schedule
+ */
+export type SchedulerConfig =
+  | { type: "none" }
+  | { type: "interval"; value: number }
+  | { type: "cron"; value: string }
+
+/**
  * Agent configuration, sourced from the platform or lifectl CLI.
  */
 export interface AgentConfig {
   agent: string
   version: string
-  interval?: number
+  /** Scheduler config injected from the database — agent code reads this via ctx.config.scheduler */
+  scheduler?: SchedulerConfig
   [key: string]: unknown
 }
 

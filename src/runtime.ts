@@ -18,7 +18,8 @@
 
 import fs from "fs"
 import path from "path"
-import type { Context, RuntimeConfig } from "./types"
+import type { Context, RuntimeConfig, SchedulerConfig } from "./types"
+import { runWithScheduler } from "./scheduler"
 
 // ─── Bootstrap ────────────────────────────────────────────────────────────────
 
@@ -115,14 +116,62 @@ async function main(): Promise<void> {
 
   const agentRun = (agent as { run: (ctx: Context) => Promise<unknown> }).run
 
+  // resolve scheduler config from ctx.config.scheduler (sourced from database by platform)
+  // default to { type: "none" } if not set
+  let schedulerConfig: SchedulerConfig = ctxBase.config?.scheduler ?? { type: "none" }
+
+  // for scheduler type "none": listen for trigger messages from DO via WebSocket
+  // for interval/cron: scheduler loop handles execution — no trigger needed
+  // all types: listen for config_updated to reload scheduler loop with new config
+  let schedulerAbort = new AbortController()
+
+  const startSchedulerLoop = (cfg: SchedulerConfig) => {
+    schedulerAbort.abort()
+    schedulerAbort = new AbortController()
+    // combine with process-level abort so SIGTERM still works
+    const combinedSignal = anySignal([abortController.signal, schedulerAbort.signal])
+    runWithScheduler(
+      cfg,
+      () => agentRun(ctx).then(() => undefined),
+      combinedSignal,
+      ctx.log,
+    ).catch((e: unknown) => {
+      const msg = e instanceof Error ? e.message : String(e)
+      console.error("[runtime] scheduler threw:", msg)
+    })
+  }
+
+  let onWsMessage: ((data: string) => void) | undefined
+  onWsMessage = (data: string) => {
+    try {
+      const msg = JSON.parse(data) as { type?: string; scheduler?: unknown }
+      if (msg.type === "trigger" && schedulerConfig.type === "none") {
+        console.log("[runtime] trigger received — running agent")
+        agentRun(ctx).then(() => undefined).catch((e: unknown) => {
+          const errMsg = e instanceof Error ? e.message : String(e)
+          console.error("[runtime] agent.run() threw during trigger:", errMsg)
+        })
+      } else if (msg.type === "config_updated" && msg.scheduler) {
+        console.log("[runtime] config_updated received — reloading scheduler:", JSON.stringify(msg.scheduler))
+        schedulerConfig = msg.scheduler as SchedulerConfig
+        startSchedulerLoop(schedulerConfig)
+      }
+    } catch {
+      // ignore malformed messages
+    }
+  }
+
   // connect WebSocket for heartbeat — URL comes from ctx.meta.runtime
   const wsConnection = runtimeCfg
-    ? startWebSocketHeartbeat(runId, runtimeCfg, accessToken)
+    ? startWebSocketHeartbeat(runId, runtimeCfg, accessToken, onWsMessage)
     : null
 
-  // graceful shutdown
+  // graceful shutdown via AbortController — shared with scheduler loop
+  const abortController = new AbortController()
+
   const shutdown = async (signal: string): Promise<void> => {
     console.log(`[runtime] ${signal} received, shutting down...`)
+    abortController.abort()
     wsConnection?.close()
     await notifyStopped(runId, runtimeCfg, accessToken)
     process.exit(0)
@@ -130,18 +179,15 @@ async function main(): Promise<void> {
   process.on("SIGTERM", () => { void shutdown("SIGTERM") })
   process.on("SIGINT", () => { void shutdown("SIGINT") })
 
-  // run the agent — heartbeat runs in background via WebSocket
-  try {
-    await agentRun(ctx)
-  } catch (e: unknown) {
-    const msg = e instanceof Error ? e.message : String(e)
-    console.error("[runtime] agent.run() threw:", msg)
-    wsConnection?.close()
-    await notifyStopped(runId, runtimeCfg, accessToken, msg)
-    process.exit(1)
-  }
+  // start scheduler loop — restartable via config_updated WebSocket message
+  startSchedulerLoop(schedulerConfig)
 
-  // run() completed normally
+  // wait until process-level abort (SIGTERM/SIGINT)
+  await new Promise<void>((resolve) => {
+    abortController.signal.addEventListener("abort", () => resolve(), { once: true })
+  })
+
+  // completed normally
   wsConnection?.close()
   await notifyStopped(runId, runtimeCfg, accessToken)
 }
@@ -153,7 +199,8 @@ const APP_URL = "https://app.lifetimesoft.com"
 function startWebSocketHeartbeat(
   runId: string,
   cfg: RuntimeConfig,
-  accessToken: string | undefined
+  accessToken: string | undefined,
+  onMessage?: (data: string) => void
 ): WebSocket {
   // track current token — may be refreshed on reconnect
   let currentToken = accessToken
@@ -182,6 +229,10 @@ function startWebSocketHeartbeat(
         }
       }, cfg.heartbeat_interval_ms)
       heartbeatTimer.unref()
+    })
+
+    ws.addEventListener("message", (event) => {
+      onMessage?.(event.data as string)
     })
 
     ws.addEventListener("close", (event) => {
@@ -317,5 +368,17 @@ async function post(url: string, body: unknown, accessToken: string | undefined)
 }
 
 // ─── Entry ────────────────────────────────────────────────────────────────────
+
+/**
+ * Combine multiple AbortSignals — aborts when any one of them aborts.
+ */
+function anySignal(signals: AbortSignal[]): AbortSignal {
+  const controller = new AbortController()
+  for (const signal of signals) {
+    if (signal.aborted) { controller.abort(); break }
+    signal.addEventListener("abort", () => controller.abort(), { once: true })
+  }
+  return controller.signal
+}
 
 void main()

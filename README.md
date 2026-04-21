@@ -52,6 +52,10 @@ export default defineAgent<{ text: string }, { reply: string }>({
 })
 ```
 
+> Running an agent built with this SDK via `lifectl`:
+
+![lifectl ai agent demo](assets/lifectl-ai-agent-01.gif)
+
 ---
 
 ## ⚙️ Context (ctx)
@@ -67,7 +71,7 @@ type Context = {
   config: {
     agent: string
     version: string
-    interval?: number
+    scheduler?: SchedulerConfig
     [key: string]: unknown
   }
 
@@ -208,12 +212,94 @@ The SDK is designed to work with the `lifectl` CLI, which automatically manages:
 
 * **WebSocket heartbeat** — persistent connection to SaaS, hibernates between messages (no polling overhead)
 * **Offline detection** — immediate when connection drops, no polling delay
-* Config updates
-* Logging (batched)
+* **Scheduler loop** — runs `run()` on schedule, restartable without process restart
+* **Config hot-reload** — when scheduler config changes in the dashboard, the runtime receives a `config_updated` message and restarts the scheduler loop automatically — no agent restart needed
+* **Manual trigger** — when scheduler is `none`, the runtime listens for `trigger` messages and calls `run()` on demand
 * Error handling
 * Retry logic with automatic WebSocket reconnect
 
 👉 You only implement `run(ctx)`
+
+---
+
+## 🕐 Scheduler
+
+The scheduler is **fully managed by the platform** — agents never configure it directly.
+
+The platform reads the scheduler config from the database and injects it into `ctx.config.scheduler`. The runtime then handles the loop automatically before calling `run()`.
+
+### Scheduler Config Format
+
+```ts
+type SchedulerConfig =
+  | { type: "none" }
+  | { type: "interval"; value: number }   // value = milliseconds
+  | { type: "cron";     value: string }   // value = cron expression (5 fields)
+```
+
+### Behavior
+
+| type | behavior |
+|---|---|
+| `none` | manual trigger only — process stays alive, `run()` called each time a trigger is received |
+| `interval` | wait `value` ms → run → wait `value` ms → run → ... |
+| `cron` | wait until next matching tick → run → wait → run → ... |
+
+> Both `interval` and `cron` **wait first**, then run. The agent does not run immediately on startup.
+
+### Manual Trigger (`none`)
+
+When scheduler is `none`, the agent process stays alive and waits for a trigger signal from the platform. Each trigger causes `run(ctx)` to be called once.
+
+Triggers are sent from the platform dashboard (Trigger button on the instance detail page) or via the API. The agent does not need any special code to handle this — the runtime manages it automatically via the existing WebSocket connection.
+
+```ts
+export default defineAgent({
+  async run(ctx) {
+    // called each time a manual trigger is received
+    ctx.log.info("Triggered!")
+  },
+})
+```
+
+The process exits cleanly on `SIGTERM` or `SIGINT`.
+
+### Cron Expression Format
+
+Standard 5-field cron: `minute hour day-of-month month day-of-week`
+
+```
+┌─────────── minute      (0–59)
+│ ┌───────── hour        (0–23)
+│ │ ┌─────── day-of-month (1–31)
+│ │ │ ┌───── month       (1–12)
+│ │ │ │ ┌─── day-of-week  (0–6, Sunday=0)
+│ │ │ │ │
+* * * * *
+```
+
+Supports `*`, ranges (`1-5`), steps (`*/15`), and lists (`1,3,5`).
+
+**Examples:**
+
+```
+0 9 * * 1-5    every weekday at 09:00
+*/30 * * * *   every 30 minutes
+0 0 1 * *      first day of every month at midnight
+```
+
+### Agent Code
+
+Agents don't need to do anything special — just write `run(ctx)` as normal. The runtime handles all scheduling and trigger logic automatically:
+
+```ts
+export default defineAgent({
+  async run(ctx) {
+    // called by scheduler (interval/cron) or manual trigger (none)
+    ctx.log.info("Running...")
+  },
+})
+```
 
 ---
 
