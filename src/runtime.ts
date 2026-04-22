@@ -18,6 +18,7 @@
 
 import fs from "fs"
 import path from "path"
+import WebSocket from "ws"
 import type { Context, RuntimeConfig, SchedulerConfig } from "./types"
 import { runWithScheduler } from "./scheduler"
 
@@ -26,6 +27,10 @@ import { runWithScheduler } from "./scheduler"
 async function main(): Promise<void> {
   const ctxJson = process.env.AGENT_CTX
   const accessToken = process.env.AGENT_ACCESS_TOKEN
+
+  console.log("[runtime] Starting agent runtime...")
+  console.log("[runtime] AGENT_CTX present:", !!ctxJson)
+  console.log("[runtime] AGENT_ACCESS_TOKEN present:", !!accessToken)
 
   if (!ctxJson) {
     console.error("[runtime] Missing required env var: AGENT_CTX")
@@ -36,8 +41,15 @@ async function main(): Promise<void> {
   let ctxBase: Pick<Context, "input" | "config" | "env" | "meta"> | undefined
   try {
     ctxBase = JSON.parse(ctxJson) as Pick<Context, "input" | "config" | "env" | "meta">
-  } catch {
-    console.error("[runtime] Failed to parse AGENT_CTX — invalid JSON")
+    console.log("[runtime] Parsed AGENT_CTX successfully")
+    console.log("[runtime] run_id:", ctxBase.meta?.run_id)
+    console.log("[runtime] runtime config present:", !!ctxBase.meta?.runtime)
+    if (ctxBase.meta?.runtime) {
+      console.log("[runtime] ws_url:", ctxBase.meta.runtime.ws_url)
+      console.log("[runtime] heartbeat_interval_ms:", ctxBase.meta.runtime.heartbeat_interval_ms)
+    }
+  } catch (e) {
+    console.error("[runtime] Failed to parse AGENT_CTX — invalid JSON:", e)
     process.exit(1)
   }
 
@@ -177,6 +189,12 @@ async function main(): Promise<void> {
   }
 
   // connect WebSocket for heartbeat — URL comes from ctx.meta.runtime
+  if (!runtimeCfg) {
+    console.warn("[runtime] No runtime config found in ctx.meta.runtime — WebSocket heartbeat disabled")
+    console.warn("[runtime] Agent will not receive live config updates or trigger messages")
+  } else {
+    console.log("[runtime] Starting WebSocket heartbeat:", { ws_url: runtimeCfg.ws_url, heartbeat_interval_ms: runtimeCfg.heartbeat_interval_ms })
+  }
   const wsConnection = runtimeCfg
     ? startWebSocketHeartbeat(runId, runtimeCfg, accessToken, onWsMessage)
     : null
@@ -243,11 +261,11 @@ function startWebSocketHeartbeat(
       heartbeatTimer.unref()
     })
 
-    ws.addEventListener("message", (event) => {
+    ws.addEventListener("message", (event: { data: WebSocket.Data; type: string; target: WebSocket }) => {
       onMessage?.(event.data as string)
     })
 
-    ws.addEventListener("close", (event) => {
+    ws.addEventListener("close", (event: { wasClean: boolean; code: number; reason: string; target: WebSocket }) => {
       if (heartbeatTimer) { clearInterval(heartbeatTimer); heartbeatTimer = null }
       if (stopped) return
       // reconnect after 5s — refresh token in case it expired

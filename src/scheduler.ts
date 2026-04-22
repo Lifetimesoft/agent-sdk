@@ -57,15 +57,30 @@ interface ParsedCron {
 
 function parseCron(expr: string): ParsedCron {
   const parts = expr.trim().split(/\s+/)
-  if (parts.length !== 5) {
-    throw new Error(`[scheduler] Cron expression must have 5 fields, got: "${expr}"`)
-  }
-  return {
-    minutes:    parseCronField(parts[0], 0, 59),
-    hours:      parseCronField(parts[1], 0, 23),
-    daysOfMonth: parseCronField(parts[2], 1, 31),
-    months:     parseCronField(parts[3], 1, 12),
-    daysOfWeek: parseCronField(parts[4], 0, 6),
+  
+  // Support both 5-field and 6-field cron expressions
+  // 5 fields: minute hour day-of-month month day-of-week
+  // 6 fields: second minute hour day-of-month month day-of-week
+  if (parts.length === 6) {
+    // 6-field format: ignore seconds (first field), use remaining 5 fields
+    return {
+      minutes:     parseCronField(parts[1], 0, 59),
+      hours:       parseCronField(parts[2], 0, 23),
+      daysOfMonth: parseCronField(parts[3], 1, 31),
+      months:      parseCronField(parts[4], 1, 12),
+      daysOfWeek:  parseCronField(parts[5], 0, 6),
+    }
+  } else if (parts.length === 5) {
+    // 5-field format: standard cron
+    return {
+      minutes:     parseCronField(parts[0], 0, 59),
+      hours:       parseCronField(parts[1], 0, 23),
+      daysOfMonth: parseCronField(parts[2], 1, 31),
+      months:      parseCronField(parts[3], 1, 12),
+      daysOfWeek:  parseCronField(parts[4], 0, 6),
+    }
+  } else {
+    throw new Error(`[scheduler] Cron expression must have 5 or 6 fields, got ${parts.length}: "${expr}"`)
   }
 }
 
@@ -119,11 +134,17 @@ export async function runWithScheduler(
   signal: AbortSignal,
   log: { info: (...a: unknown[]) => void; error: (...a: unknown[]) => void }
 ): Promise<void> {
+  log.info(`[scheduler] Starting with config:`, JSON.stringify(config))
+  
   if (config.type === "none") {
+    log.info(`[scheduler] Type is "none" — waiting for manual trigger via WebSocket`)
     // wait indefinitely — agent is triggered manually via WebSocket message
     // the loop exits only when signal is aborted (SIGTERM/SIGINT)
     await new Promise<void>((resolve) => {
-      signal.addEventListener("abort", () => resolve(), { once: true })
+      signal.addEventListener("abort", () => {
+        log.info(`[scheduler] Received abort signal, exiting`)
+        resolve()
+      }, { once: true })
     })
     return
   }
