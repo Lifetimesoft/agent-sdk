@@ -147,7 +147,7 @@ export async function runWithScheduler(
       } catch (e) {
         log.error("[scheduler] agent.run() threw during interval loop:", e)
       }
-      log.info(`[scheduler] end job ${jobId} — Waiting ${ms}ms until next run`)
+      log.info(`[scheduler] end job ${jobId}`)
       log.info("----------")
     }
     return

@@ -151,7 +151,7 @@ async function main(): Promise<void> {
   let onWsMessage: ((data: string) => void) | undefined
   onWsMessage = (data: string) => {
     try {
-      const msg = JSON.parse(data) as { type?: string; scheduler?: unknown }
+      const msg = JSON.parse(data) as { type?: string; scheduler?: unknown; config?: unknown }
       if (msg.type === "trigger" && schedulerConfig.type === "none") {
         const jobId = Math.floor(Math.random() * 0xffffff).toString(16).padStart(6, "0")
         console.log(`[${fmtDate()}] [job:${jobId}] [agent:info] [scheduler] start job ${jobId}`)
@@ -163,9 +163,12 @@ async function main(): Promise<void> {
           const errMsg = e instanceof Error ? e.message : String(e)
           console.error(`[${fmtDate()}] [job:${jobId}] [agent:error] agent.run() threw during trigger:`, errMsg)
         })
-      } else if (msg.type === "config_updated" && msg.scheduler) {
-        console.log("[runtime] config_updated received — reloading scheduler:", JSON.stringify(msg.scheduler))
-        schedulerConfig = msg.scheduler as SchedulerConfig
+      } else if (msg.type === "config_updated" && msg.config) {
+        console.log("[runtime] config_updated received — reloading config:", JSON.stringify(msg.config))
+        // update full ctx.config with new config from platform
+        ctx.config = msg.config as Context["config"]
+        // extract scheduler config for scheduler loop
+        schedulerConfig = (msg.config as { scheduler?: SchedulerConfig })?.scheduler ?? { type: "none" }
         startSchedulerLoop(schedulerConfig)
       }
     } catch {
