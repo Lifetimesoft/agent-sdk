@@ -54,13 +54,15 @@ async function main(): Promise<void> {
   }
 
   // build full ctx — providers injected here, agent code only sees the interface
+  const makeLogger = (jobId: string) => ({
+    info:  (...args: unknown[]) => console.log(`[${fmtDate()}] [job:${jobId}] [agent:info]`, ...args),
+    error: (...args: unknown[]) => console.error(`[${fmtDate()}] [job:${jobId}] [agent:error]`, ...args),
+    debug: (...args: unknown[]) => console.debug(`[${fmtDate()}] [job:${jobId}] [agent:debug]`, ...args),
+  })
+
   const ctx: Context = {
     ...ctxBase,
-    log: {
-      info:  (...args: unknown[]) => console.log(`[${new Date().toISOString()}] [agent:info]`, ...args),
-      error: (...args: unknown[]) => console.error(`[${new Date().toISOString()}] [agent:error]`, ...args),
-      debug: (...args: unknown[]) => console.debug(`[${new Date().toISOString()}] [agent:debug]`, ...args),
-    },
+    log: makeLogger(""),
     ai: {
       chat: async () => {
         throw new Error("[runtime] ctx.ai.chat() is not configured in this runtime.")
@@ -120,6 +122,9 @@ async function main(): Promise<void> {
   // default to { type: "none" } if not set
   let schedulerConfig: SchedulerConfig = ctxBase.config?.scheduler ?? { type: "none" }
 
+  // graceful shutdown via AbortController — must be declared before startSchedulerLoop
+  const abortController = new AbortController()
+
   // for scheduler type "none": listen for trigger messages from DO via WebSocket
   // for interval/cron: scheduler loop handles execution — no trigger needed
   // all types: listen for config_updated to reload scheduler loop with new config
@@ -128,13 +133,15 @@ async function main(): Promise<void> {
   const startSchedulerLoop = (cfg: SchedulerConfig) => {
     schedulerAbort.abort()
     schedulerAbort = new AbortController()
-    // combine with process-level abort so SIGTERM still works
     const combinedSignal = anySignal([abortController.signal, schedulerAbort.signal])
     runWithScheduler(
       cfg,
-      () => agentRun(ctx).then(() => undefined),
+      (jobId: string) => {
+        ctx.log = makeLogger(jobId)
+        return agentRun(ctx).then(() => undefined)
+      },
       combinedSignal,
-      ctx.log,
+      makeLogger(""),
     ).catch((e: unknown) => {
       const msg = e instanceof Error ? e.message : String(e)
       console.error("[runtime] scheduler threw:", msg)
@@ -146,10 +153,15 @@ async function main(): Promise<void> {
     try {
       const msg = JSON.parse(data) as { type?: string; scheduler?: unknown }
       if (msg.type === "trigger" && schedulerConfig.type === "none") {
-        console.log("[runtime] trigger received — running agent")
-        agentRun(ctx).then(() => undefined).catch((e: unknown) => {
+        const jobId = Math.floor(Math.random() * 0xffffff).toString(16).padStart(6, "0")
+        console.log(`[${fmtDate()}] [job:${jobId}] [agent:info] [scheduler] start job ${jobId}`)
+        ctx.log = makeLogger(jobId)
+        agentRun(ctx).then(() => {
+          console.log(`[${fmtDate()}] [job:${jobId}] [agent:info] [scheduler] end job ${jobId}`)
+          console.log(`[${fmtDate()}] [job:${jobId}] [agent:info] ----------`)
+        }).catch((e: unknown) => {
           const errMsg = e instanceof Error ? e.message : String(e)
-          console.error("[runtime] agent.run() threw during trigger:", errMsg)
+          console.error(`[${fmtDate()}] [job:${jobId}] [agent:error] agent.run() threw during trigger:`, errMsg)
         })
       } else if (msg.type === "config_updated" && msg.scheduler) {
         console.log("[runtime] config_updated received — reloading scheduler:", JSON.stringify(msg.scheduler))
@@ -165,9 +177,6 @@ async function main(): Promise<void> {
   const wsConnection = runtimeCfg
     ? startWebSocketHeartbeat(runId, runtimeCfg, accessToken, onWsMessage)
     : null
-
-  // graceful shutdown via AbortController — shared with scheduler loop
-  const abortController = new AbortController()
 
   const shutdown = async (signal: string): Promise<void> => {
     console.log(`[runtime] ${signal} received, shutting down...`)
@@ -368,6 +377,11 @@ async function post(url: string, body: unknown, accessToken: string | undefined)
 }
 
 // ─── Entry ────────────────────────────────────────────────────────────────────
+
+/** Format current time as "YYYY-MM-DD HH:MM:SS" (no ms, space instead of T) */
+function fmtDate(): string {
+  return new Date().toISOString().replace("T", " ").slice(0, 19)
+}
 
 /**
  * Combine multiple AbortSignals — aborts when any one of them aborts.

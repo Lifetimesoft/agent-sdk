@@ -115,7 +115,7 @@ function msUntilNextCron(cron: ParsedCron, now: Date): number {
  */
 export async function runWithScheduler(
   config: SchedulerConfig,
-  runOnce: () => Promise<void>,
+  runOnce: (jobId: string) => Promise<void>,
   signal: AbortSignal,
   log: { info: (...a: unknown[]) => void; error: (...a: unknown[]) => void }
 ): Promise<void> {
@@ -140,11 +140,15 @@ export async function runWithScheduler(
       await sleep(ms, signal)
       if (signal.aborted) break
 
+      const jobId = genJobId()
+      log.info(`[scheduler] start job ${jobId}`)
       try {
-        await runOnce()
+        await runOnce(jobId)
       } catch (e) {
         log.error("[scheduler] agent.run() threw during interval loop:", e)
       }
+      log.info(`[scheduler] end job ${jobId} — Waiting ${ms}ms until next run`)
+      log.info("----------")
     }
     return
   }
@@ -159,11 +163,15 @@ export async function runWithScheduler(
       await sleep(delay, signal)
       if (signal.aborted) break
 
+      const jobId = genJobId()
+      log.info(`[scheduler] start job ${jobId}`)
       try {
-        await runOnce()
+        await runOnce(jobId)
       } catch (e) {
         log.error("[scheduler] agent.run() threw during cron loop:", e)
       }
+      log.info(`[scheduler] end job ${jobId}`)
+      log.info("----------")
     }
     return
   }
@@ -171,6 +179,11 @@ export async function runWithScheduler(
   // exhaustive check
   const _: never = config
   throw new Error(`[scheduler] Unknown scheduler type: ${(_ as SchedulerConfig).type}`)
+}
+
+/** Generate a short random job ID (6 hex chars) */
+function genJobId(): string {
+  return Math.floor(Math.random() * 0xffffff).toString(16).padStart(6, "0")
 }
 
 /**
