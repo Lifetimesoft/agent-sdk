@@ -18,6 +18,7 @@
 
 import fs from "fs"
 import path from "path"
+import WebSocket from "ws"
 import type { Context, RuntimeConfig, SchedulerConfig } from "./types"
 import { runWithScheduler } from "./scheduler"
 
@@ -26,6 +27,10 @@ import { runWithScheduler } from "./scheduler"
 async function main(): Promise<void> {
   const ctxJson = process.env.AGENT_CTX
   const accessToken = process.env.AGENT_ACCESS_TOKEN
+
+  console.log("[runtime] Starting agent runtime...")
+  console.log("[runtime] AGENT_CTX present:", !!ctxJson)
+  console.log("[runtime] AGENT_ACCESS_TOKEN present:", !!accessToken)
 
   if (!ctxJson) {
     console.error("[runtime] Missing required env var: AGENT_CTX")
@@ -36,8 +41,15 @@ async function main(): Promise<void> {
   let ctxBase: Pick<Context, "input" | "config" | "env" | "meta"> | undefined
   try {
     ctxBase = JSON.parse(ctxJson) as Pick<Context, "input" | "config" | "env" | "meta">
-  } catch {
-    console.error("[runtime] Failed to parse AGENT_CTX — invalid JSON")
+    console.log("[runtime] Parsed AGENT_CTX successfully")
+    console.log("[runtime] run_id:", ctxBase.meta?.run_id)
+    console.log("[runtime] runtime config present:", !!ctxBase.meta?.runtime)
+    if (ctxBase.meta?.runtime) {
+      console.log("[runtime] ws_url:", ctxBase.meta.runtime.ws_url)
+      console.log("[runtime] heartbeat_interval_ms:", ctxBase.meta.runtime.heartbeat_interval_ms)
+    }
+  } catch (e) {
+    console.error("[runtime] Failed to parse AGENT_CTX — invalid JSON:", e)
     process.exit(1)
   }
 
@@ -54,13 +66,15 @@ async function main(): Promise<void> {
   }
 
   // build full ctx — providers injected here, agent code only sees the interface
+  const makeLogger = (jobId: string) => ({
+    info:  (...args: unknown[]) => console.log(`[${fmtDate()}] [job:${jobId}] [agent:info]`, ...args),
+    error: (...args: unknown[]) => console.error(`[${fmtDate()}] [job:${jobId}] [agent:error]`, ...args),
+    debug: (...args: unknown[]) => console.debug(`[${fmtDate()}] [job:${jobId}] [agent:debug]`, ...args),
+  })
+
   const ctx: Context = {
     ...ctxBase,
-    log: {
-      info:  (...args: unknown[]) => console.log(`[${new Date().toISOString()}] [agent:info]`, ...args),
-      error: (...args: unknown[]) => console.error(`[${new Date().toISOString()}] [agent:error]`, ...args),
-      debug: (...args: unknown[]) => console.debug(`[${new Date().toISOString()}] [agent:debug]`, ...args),
-    },
+    log: makeLogger(""),
     ai: {
       chat: async () => {
         throw new Error("[runtime] ctx.ai.chat() is not configured in this runtime.")
@@ -120,6 +134,9 @@ async function main(): Promise<void> {
   // default to { type: "none" } if not set
   let schedulerConfig: SchedulerConfig = ctxBase.config?.scheduler ?? { type: "none" }
 
+  // graceful shutdown via AbortController — must be declared before startSchedulerLoop
+  const abortController = new AbortController()
+
   // for scheduler type "none": listen for trigger messages from DO via WebSocket
   // for interval/cron: scheduler loop handles execution — no trigger needed
   // all types: listen for config_updated to reload scheduler loop with new config
@@ -128,13 +145,15 @@ async function main(): Promise<void> {
   const startSchedulerLoop = (cfg: SchedulerConfig) => {
     schedulerAbort.abort()
     schedulerAbort = new AbortController()
-    // combine with process-level abort so SIGTERM still works
     const combinedSignal = anySignal([abortController.signal, schedulerAbort.signal])
     runWithScheduler(
       cfg,
-      () => agentRun(ctx).then(() => undefined),
+      (jobId: string) => {
+        ctx.log = makeLogger(jobId)
+        return agentRun(ctx).then(() => undefined)
+      },
       combinedSignal,
-      ctx.log,
+      makeLogger(""),
     ).catch((e: unknown) => {
       const msg = e instanceof Error ? e.message : String(e)
       console.error("[runtime] scheduler threw:", msg)
@@ -144,16 +163,24 @@ async function main(): Promise<void> {
   let onWsMessage: ((data: string) => void) | undefined
   onWsMessage = (data: string) => {
     try {
-      const msg = JSON.parse(data) as { type?: string; scheduler?: unknown }
+      const msg = JSON.parse(data) as { type?: string; scheduler?: unknown; config?: unknown }
       if (msg.type === "trigger" && schedulerConfig.type === "none") {
-        console.log("[runtime] trigger received — running agent")
-        agentRun(ctx).then(() => undefined).catch((e: unknown) => {
+        const jobId = Math.floor(Math.random() * 0xffffff).toString(16).padStart(6, "0")
+        console.log(`[${fmtDate()}] [job:${jobId}] [agent:info] [scheduler] start job ${jobId}`)
+        ctx.log = makeLogger(jobId)
+        agentRun(ctx).then(() => {
+          console.log(`[${fmtDate()}] [job:${jobId}] [agent:info] [scheduler] end job ${jobId}`)
+          console.log(`[${fmtDate()}] [job:${jobId}] [agent:info] ----------`)
+        }).catch((e: unknown) => {
           const errMsg = e instanceof Error ? e.message : String(e)
-          console.error("[runtime] agent.run() threw during trigger:", errMsg)
+          console.error(`[${fmtDate()}] [job:${jobId}] [agent:error] agent.run() threw during trigger:`, errMsg)
         })
-      } else if (msg.type === "config_updated" && msg.scheduler) {
-        console.log("[runtime] config_updated received — reloading scheduler:", JSON.stringify(msg.scheduler))
-        schedulerConfig = msg.scheduler as SchedulerConfig
+      } else if (msg.type === "config_updated" && msg.config) {
+        console.log("[runtime] config_updated received — reloading config:", JSON.stringify(msg.config))
+        // update full ctx.config with new config from platform
+        ctx.config = msg.config as Context["config"]
+        // extract scheduler config for scheduler loop
+        schedulerConfig = (msg.config as { scheduler?: SchedulerConfig })?.scheduler ?? { type: "none" }
         startSchedulerLoop(schedulerConfig)
       }
     } catch {
@@ -162,12 +189,15 @@ async function main(): Promise<void> {
   }
 
   // connect WebSocket for heartbeat — URL comes from ctx.meta.runtime
+  if (!runtimeCfg) {
+    console.warn("[runtime] No runtime config found in ctx.meta.runtime — WebSocket heartbeat disabled")
+    console.warn("[runtime] Agent will not receive live config updates or trigger messages")
+  } else {
+    console.log("[runtime] Starting WebSocket heartbeat:", { ws_url: runtimeCfg.ws_url, heartbeat_interval_ms: runtimeCfg.heartbeat_interval_ms })
+  }
   const wsConnection = runtimeCfg
     ? startWebSocketHeartbeat(runId, runtimeCfg, accessToken, onWsMessage)
     : null
-
-  // graceful shutdown via AbortController — shared with scheduler loop
-  const abortController = new AbortController()
 
   const shutdown = async (signal: string): Promise<void> => {
     console.log(`[runtime] ${signal} received, shutting down...`)
@@ -231,11 +261,11 @@ function startWebSocketHeartbeat(
       heartbeatTimer.unref()
     })
 
-    ws.addEventListener("message", (event) => {
+    ws.addEventListener("message", (event: { data: WebSocket.Data; type: string; target: WebSocket }) => {
       onMessage?.(event.data as string)
     })
 
-    ws.addEventListener("close", (event) => {
+    ws.addEventListener("close", (event: { wasClean: boolean; code: number; reason: string; target: WebSocket }) => {
       if (heartbeatTimer) { clearInterval(heartbeatTimer); heartbeatTimer = null }
       if (stopped) return
       // reconnect after 5s — refresh token in case it expired
@@ -368,6 +398,11 @@ async function post(url: string, body: unknown, accessToken: string | undefined)
 }
 
 // ─── Entry ────────────────────────────────────────────────────────────────────
+
+/** Format current time as "YYYY-MM-DD HH:MM:SS" (no ms, space instead of T) */
+function fmtDate(): string {
+  return new Date().toISOString().replace("T", " ").slice(0, 19)
+}
 
 /**
  * Combine multiple AbortSignals — aborts when any one of them aborts.

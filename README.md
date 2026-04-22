@@ -266,7 +266,9 @@ The process exits cleanly on `SIGTERM` or `SIGINT`.
 
 ### Cron Expression Format
 
-Standard 5-field cron: `minute hour day-of-month month day-of-week`
+Supports both standard 5-field and extended 6-field cron expressions:
+
+**5-field (standard):** `minute hour day-of-month month day-of-week`
 
 ```
 ┌─────────── minute      (0–59)
@@ -278,14 +280,31 @@ Standard 5-field cron: `minute hour day-of-month month day-of-week`
 * * * * *
 ```
 
+**6-field (extended):** `second minute hour day-of-month month day-of-week`
+
+```
+┌───────────── second      (0–59, ignored by scheduler)
+│ ┌─────────── minute      (0–59)
+│ │ ┌───────── hour        (0–23)
+│ │ │ ┌─────── day-of-month (1–31)
+│ │ │ │ ┌───── month       (1–12)
+│ │ │ │ │ ┌─── day-of-week  (0–6, Sunday=0)
+│ │ │ │ │ │
+* * * * * *
+```
+
+> **Note:** When using 6-field format, the seconds field is ignored by the scheduler. The agent will still run at minute-level precision.
+
 Supports `*`, ranges (`1-5`), steps (`*/15`), and lists (`1,3,5`).
 
 **Examples:**
 
 ```
-0 9 * * 1-5    every weekday at 09:00
-*/30 * * * *   every 30 minutes
-0 0 1 * *      first day of every month at midnight
+0 9 * * 1-5      every weekday at 09:00 (5-field)
+0 */5 * * * *    every 5 hours (6-field)
+*/30 * * * *     every 30 minutes (5-field)
+0 0 1 * *        first day of every month at midnight (5-field)
+0 0 */6 * * *    every 6 hours (6-field)
 ```
 
 ### Agent Code

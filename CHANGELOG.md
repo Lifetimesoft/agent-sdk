@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.0.8] - 2026-04-23
+
+### Added
+
+- **6-field cron support** — scheduler now accepts both 5-field and 6-field cron expressions
+  - 5-field: `minute hour day-of-month month day-of-week` (standard)
+  - 6-field: `second minute hour day-of-month month day-of-week` (seconds field ignored)
+- **Enhanced cron parsing** — improved step syntax parsing for expressions like `*/5` (every 5 units)
+
+### Fixed
+
+- **Cron validation** — fixed parsing of step expressions (`*/5`, `1-10/2`) in scheduler
+- **WebSocket dependencies** — added missing `ws` and `@types/ws` packages for WebSocket functionality
+
+### Changed
+
+- **Cron parser** — more robust field parsing using `indexOf()` instead of regex for better compatibility
+- **Error messages** — improved cron validation error messages to be more descriptive
+
+---
+
 ## [0.0.4] - 2026-04-21
 
 ### Added
