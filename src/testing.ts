@@ -15,7 +15,7 @@ import type {
 export interface MockContextOptions<TInput = unknown> {
   input?: TInput
   config?: Partial<AgentConfig>
-  env?: Record<string, string>
+  env?: Record<string, unknown>
   ai?: Partial<AiProvider>
   storage?: Partial<StorageProvider>
   queue?: Partial<QueueProvider>
