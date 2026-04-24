@@ -6,6 +6,8 @@
 /**
  * Get an environment variable as a string with optional default value
  */
+export function getEnvString(env: Record<string, unknown>, key: string): string | undefined
+export function getEnvString(env: Record<string, unknown>, key: string, defaultValue: string): string
 export function getEnvString(env: Record<string, unknown>, key: string, defaultValue?: string): string | undefined {
   const value = env[key]
   if (value === undefined || value === null) {
@@ -17,6 +19,8 @@ export function getEnvString(env: Record<string, unknown>, key: string, defaultV
 /**
  * Get an environment variable as a number with optional default value
  */
+export function getEnvNumber(env: Record<string, unknown>, key: string): number | undefined
+export function getEnvNumber(env: Record<string, unknown>, key: string, defaultValue: number): number
 export function getEnvNumber(env: Record<string, unknown>, key: string, defaultValue?: number): number | undefined {
   const value = getEnvString(env, key)
   if (value === undefined) {
@@ -29,6 +33,8 @@ export function getEnvNumber(env: Record<string, unknown>, key: string, defaultV
 /**
  * Get an environment variable as an integer with optional default value
  */
+export function getEnvInt(env: Record<string, unknown>, key: string): number | undefined
+export function getEnvInt(env: Record<string, unknown>, key: string, defaultValue: number): number
 export function getEnvInt(env: Record<string, unknown>, key: string, defaultValue?: number): number | undefined {
   const value = getEnvString(env, key)
   if (value === undefined) {
