@@ -6,6 +6,14 @@
 
 export { defineAgent } from "./defineAgent"
 
+export {
+  getEnvString,
+  getEnvNumber,
+  getEnvInt,
+  getEnvBoolean,
+  hasEnv,
+} from "./env"
+
 export type {
   Agent,
   AgentDefinition,

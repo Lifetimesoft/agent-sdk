@@ -37,12 +37,16 @@ npm install @lifetimesoft/agent-sdk
 ## ✨ Quick Example
 
 ```ts
-import { defineAgent } from "@lifetimesoft/agent-sdk"
+import { defineAgent, getEnvString } from "@lifetimesoft/agent-sdk"
 
 export default defineAgent<{ text: string }, { reply: string }>({
   async run(ctx) {
+    // Safe environment variable access
+    const model = getEnvString(ctx.env, 'AI_MODEL', 'gpt-4')
+    
     const reply = await ctx.ai.chat({
       messages: [{ role: "user", content: `Say hello to: ${ctx.input.text}` }],
+      model,
     })
 
     ctx.log.info("AI reply:", reply)
@@ -75,7 +79,7 @@ type Context = {
     [key: string]: unknown
   }
 
-  env: Record<string, string>
+  env: Record<string, unknown>
 
   ai: {
     chat: (req: {
@@ -111,6 +115,65 @@ type Context = {
 
 ---
 
+## 🌍 Environment Variables
+
+Environment variables are available via `ctx.env` as `Record<string, unknown>`. Use the provided utility functions for safe type conversion:
+
+### Utility Functions
+
+```ts
+import { 
+  getEnvString, 
+  getEnvInt, 
+  getEnvNumber, 
+  getEnvBoolean, 
+  hasEnv 
+} from "@lifetimesoft/agent-sdk"
+
+export default defineAgent({
+  async run(ctx) {
+    // String values with defaults
+    const apiKey = getEnvString(ctx.env, 'API_KEY', 'default-key')
+    const host = getEnvString(ctx.env, 'HOST', 'localhost')
+    
+    // Integer parsing with defaults
+    const port = getEnvInt(ctx.env, 'PORT', 3000)
+    const timeout = getEnvInt(ctx.env, 'TIMEOUT_MS', 5000)
+    
+    // Boolean parsing (supports 'true', '1', 'yes', 'on' as true)
+    const debugMode = getEnvBoolean(ctx.env, 'DEBUG', false)
+    const enableFeature = getEnvBoolean(ctx.env, 'ENABLE_FEATURE', true)
+    
+    // Check if environment variable exists
+    if (hasEnv(ctx.env, 'OPTIONAL_CONFIG')) {
+      const value = getEnvString(ctx.env, 'OPTIONAL_CONFIG')
+      ctx.log.info(`Optional config: ${value}`)
+    }
+  }
+})
+```
+
+### Available Functions
+
+| Function | Description | Example |
+|----------|-------------|---------|
+| `getEnvString(env, key, default?)` | Get string value with optional default | `getEnvString(ctx.env, 'API_KEY', 'default')` |
+| `getEnvInt(env, key, default?)` | Parse as integer with optional default | `getEnvInt(ctx.env, 'PORT', 3000)` |
+| `getEnvNumber(env, key, default?)` | Parse as number with optional default | `getEnvNumber(ctx.env, 'RATE', 1.5)` |
+| `getEnvBoolean(env, key, default?)` | Parse as boolean (true/1/yes/on = true) | `getEnvBoolean(ctx.env, 'DEBUG', false)` |
+| `hasEnv(env, key)` | Check if variable exists and is not empty | `hasEnv(ctx.env, 'OPTIONAL_VAR')` |
+
+### Alternative: Type Assertions
+
+For quick migration, you can use type assertions:
+
+```ts
+const port = parseInt((ctx.env.PORT as string) || '3000')
+const apiKey = (ctx.env.API_KEY as string) || 'default'
+```
+
+---
+
 ## 🔧 API
 
 ### `defineAgent()`
@@ -137,22 +200,42 @@ defineAgent({
 ## 🧪 Example: Using Input + Config
 
 ```ts
+import { defineAgent, getEnvString, getEnvNumber } from "@lifetimesoft/agent-sdk"
+
 export default defineAgent({
   async run(ctx) {
     const { input, config } = ctx
     const tone = (config.tone as string) ?? "neutral"
+    
+    // Use environment variables safely
+    const model = getEnvString(ctx.env, 'AI_MODEL', 'gpt-4')
+    const temperature = getEnvNumber(ctx.env, 'AI_TEMPERATURE', 0.7)
 
     const reply = await ctx.ai.chat({
       messages: [
         { role: "system", content: `You reply in a ${tone} tone.` },
         { role: "user", content: (input as { text: string }).text },
       ],
+      model,
+      temperature,
     })
 
     return { text: reply }
   },
 })
 ```
+
+---
+
+## 📋 Changelog
+
+### v0.0.9 (Breaking Changes)
+
+**🔄 Environment Variables Type Change**
+- **BREAKING:** Changed `ctx.env` from `Record<string, string>` to `Record<string, unknown>`
+- **NEW:** Added utility functions for safe environment variable access:
+  - `getEnvString()`, `getEnvInt()`, `getEnvNumber()`, `getEnvBoolean()`, `hasEnv()`
+- **MIGRATION:** Use utility functions or type assertions. See [Migration Guide](MIGRATION.md)
 
 ---
 
@@ -193,8 +276,13 @@ const messages = ctx.queue._getMessages()
 
 * Use `ctx.ai` instead of calling external APIs directly
 * Use `ctx.log` for logging
+* Use environment variable utilities (`getEnvString`, `getEnvInt`, etc.) for type safety
 * Keep agent logic simple and focused
 * Treat `ctx` as your only runtime interface
+
+### 📚 Migration
+
+* **Upgrading from v0.0.8 or earlier?** See the [Migration Guide](MIGRATION.md) for environment variable changes
 
 ---
 
