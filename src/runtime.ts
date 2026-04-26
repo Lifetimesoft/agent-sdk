@@ -75,11 +75,7 @@ async function main(): Promise<void> {
   const ctx: Context = {
     ...ctxBase,
     log: makeLogger(""),
-    ai: {
-      chat: async () => {
-        throw new Error("[runtime] ctx.ai.chat() is not configured in this runtime.")
-      },
-    },
+    ai: buildAiProvider(runtimeCfg, accessToken, ctxBase.env),
     storage: buildStorageProvider(runId, runtimeCfg, accessToken),
     queue: {
       push: async () => {
@@ -385,6 +381,209 @@ function buildStorageProvider(
       await post(`${base}/storage/delete`, { run_id: runId, key }, accessToken)
     },
   }
+}
+
+// ─── AI provider ──────────────────────────────────────────────────────────────
+
+function buildAiProvider(
+  cfg: RuntimeConfig | undefined,
+  accessToken: string | undefined,
+  env: Record<string, unknown>
+) {
+  return {
+    chat: async (req: {
+      messages: Array<{ role: "system" | "user" | "assistant"; content: string }>
+      model?: string
+      temperature?: number
+    }): Promise<string> => {
+      // Check for agent-side AI configuration
+      const geminiApiKey = env.gemini_api_key as string | undefined
+      const openaiApiKey = env.openai_api_key as string | undefined
+      const agentProvider = env.ai_provider as string | undefined
+
+      if (geminiApiKey || openaiApiKey || agentProvider) {
+        // Agent-side mode: call AI provider directly from agent
+        return callAgentSideAi(req, geminiApiKey, openaiApiKey, agentProvider)
+      }
+
+      // Platform-side mode: call platform API endpoint
+      return callPlatformSideAi(req, cfg, accessToken)
+    },
+  }
+}
+
+/**
+ * Agent-side AI: Agent calls AI provider directly using its own API key
+ */
+async function callAgentSideAi(
+  req: {
+    messages: Array<{ role: "system" | "user" | "assistant"; content: string }>
+    model?: string
+    temperature?: number
+  },
+  geminiApiKey: string | undefined,
+  openaiApiKey: string | undefined,
+  provider: string | undefined
+): Promise<string> {
+  // Auto-detect provider from model name or explicit provider setting
+  const isOpenAI = req.model?.startsWith("gpt-") || provider === "openai"
+  const selectedProvider = isOpenAI ? "openai" : "gemini"
+
+  if (selectedProvider === "gemini") {
+    if (!geminiApiKey) {
+      throw new Error("[runtime] Agent-side AI: gemini_api_key not found in agent env")
+    }
+    return callGeminiDirect(req, geminiApiKey)
+  } else {
+    if (!openaiApiKey) {
+      throw new Error("[runtime] Agent-side AI: openai_api_key not found in agent env")
+    }
+    return callOpenAIDirect(req, openaiApiKey)
+  }
+}
+
+/**
+ * Platform-side AI: Agent calls platform API endpoint
+ */
+async function callPlatformSideAi(
+  req: {
+    messages: Array<{ role: "system" | "user" | "assistant"; content: string }>
+    model?: string
+    temperature?: number
+  },
+  cfg: RuntimeConfig | undefined,
+  accessToken: string | undefined
+): Promise<string> {
+  const aiUrl = cfg?.ai_url || "https://app.lifetimesoft.com/cli/ai-account-management/ai/chat"
+
+  if (!accessToken) {
+    throw new Error("[runtime] Platform-side AI requires authentication (missing access token)")
+  }
+
+  const res = await fetch(aiUrl, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: accessToken,
+    },
+    body: JSON.stringify({
+      messages: req.messages,
+      model: req.model,
+      temperature: req.temperature,
+    }),
+  })
+
+  if (!res.ok) {
+    const errorText = await res.text().catch(() => "unknown error")
+    throw new Error(`[runtime] Platform-side AI failed (${res.status}): ${errorText}`)
+  }
+
+  const data = await res.json() as { success: boolean; response?: string; message?: string }
+
+  if (!data.success || !data.response) {
+    throw new Error(`[runtime] Platform-side AI failed: ${data.message || "no response"}`)
+  }
+
+  return data.response
+}
+
+/**
+ * Call Gemini API directly (Agent-side)
+ */
+async function callGeminiDirect(
+  req: {
+    messages: Array<{ role: "system" | "user" | "assistant"; content: string }>
+    model?: string
+    temperature?: number
+  },
+  apiKey: string
+): Promise<string> {
+  const model = req.model || "gemini-2.0-flash-exp"
+
+  // Convert messages to Gemini format
+  const contents = req.messages
+    .filter(m => m.role !== "system")
+    .map(m => ({
+      role: m.role === "assistant" ? "model" : "user",
+      parts: [{ text: m.content }]
+    }))
+
+  const systemInstruction = req.messages.find(m => m.role === "system")?.content
+
+  const requestBody: any = {
+    contents,
+    generationConfig: {
+      temperature: req.temperature ?? 0.7,
+    }
+  }
+
+  if (systemInstruction) {
+    requestBody.systemInstruction = {
+      parts: [{ text: systemInstruction }]
+    }
+  }
+
+  const res = await fetch(
+    `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(requestBody)
+    }
+  )
+
+  if (!res.ok) {
+    const errorText = await res.text().catch(() => "unknown error")
+    throw new Error(`[runtime] Gemini API error (${res.status}): ${errorText}`)
+  }
+
+  const data = await res.json() as any
+
+  if (!data.candidates?.[0]?.content?.parts?.[0]?.text) {
+    throw new Error("[runtime] Invalid response from Gemini API")
+  }
+
+  return data.candidates[0].content.parts[0].text
+}
+
+/**
+ * Call OpenAI API directly (Agent-side)
+ */
+async function callOpenAIDirect(
+  req: {
+    messages: Array<{ role: "system" | "user" | "assistant"; content: string }>
+    model?: string
+    temperature?: number
+  },
+  apiKey: string
+): Promise<string> {
+  const model = req.model || "gpt-4o-mini"
+
+  const res = await fetch("https://api.openai.com/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": `Bearer ${apiKey}`
+    },
+    body: JSON.stringify({
+      model,
+      messages: req.messages,
+      temperature: req.temperature ?? 0.7,
+    })
+  })
+
+  if (!res.ok) {
+    const errorText = await res.text().catch(() => "unknown error")
+    throw new Error(`[runtime] OpenAI API error (${res.status}): ${errorText}`)
+  }
+
+  const data = await res.json() as any
+
+  if (!data.choices?.[0]?.message?.content) {
+    throw new Error("[runtime] Invalid response from OpenAI API")
+  }
+
+  return data.choices[0].message.content
 }
 
 // ─── HTTP helper ──────────────────────────────────────────────────────────────
