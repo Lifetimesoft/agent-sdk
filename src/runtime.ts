@@ -179,6 +179,11 @@ async function main(): Promise<void> {
         console.log("[runtime] config_updated received — reloading config:", JSON.stringify(msg.config))
         // update full ctx.config with new config from platform
         ctx.config = msg.config as Context["config"]
+        // update ctx.env if present in config
+        if ((msg.config as { env?: Record<string, unknown> })?.env) {
+          ctx.env = (msg.config as { env: Record<string, unknown> }).env
+          console.log("[runtime] env updated:", JSON.stringify(ctx.env))
+        }
         // extract scheduler config for scheduler loop
         schedulerConfig = (msg.config as { scheduler?: SchedulerConfig })?.scheduler ?? { type: "none" }
         startSchedulerLoop(schedulerConfig)
