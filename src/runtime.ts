@@ -172,13 +172,13 @@ async function main(): Promise<void> {
           console.error(`[${fmtDate()}] [job:${jobId}] [agent:error] agent.run() threw during trigger:`, errMsg)
         })
       } else if (msg.type === "config_updated" && msg.config) {
-        console.log("[runtime] config_updated received — reloading config:", JSON.stringify(msg.config))
+        console.log("[runtime] config_updated received — reloading scheduler")
         // update full ctx.config with new config from platform
         ctx.config = msg.config as Context["config"]
         // update ctx.env if present in config (platform env overrides default env from version)
         if ((msg.config as { env?: Record<string, unknown> })?.env) {
           ctx.env = (msg.config as { env: Record<string, unknown> }).env
-          console.log("[runtime] env updated:", JSON.stringify(ctx.env))
+          console.log("[runtime] env updated")
         }
         // extract scheduler config for scheduler loop
         schedulerConfig = (msg.config as { scheduler?: SchedulerConfig })?.scheduler ?? { type: "none" }
