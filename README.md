@@ -115,6 +115,85 @@ type Context = {
 
 ---
 
+## 🤖 AI Provider (ctx.ai)
+
+The SDK provides a unified AI interface that supports **hybrid mode** — you can choose between Platform-side AI (using platform API keys) or Agent-side AI (using your own API keys).
+
+### Platform-side AI (Default)
+
+Uses API keys managed by the platform. No configuration needed in your agent.
+
+```ts
+export default defineAgent({
+  async run(ctx) {
+    const reply = await ctx.ai.chat({
+      messages: [
+        { role: "system", content: "You are a helpful assistant" },
+        { role: "user", content: "Hello!" }
+      ],
+      model: "gemini-2.0-flash-exp",  // optional, defaults to gemini-2.0-flash-exp
+      temperature: 0.7                 // optional, defaults to 0.7
+    })
+    
+    return { reply }
+  }
+})
+```
+
+**Supported Models:**
+- **Gemini** (default): `gemini-2.0-flash-exp`, `gemini-1.5-pro`, `gemini-1.5-flash`
+- **OpenAI**: `gpt-4o-mini`, `gpt-4o`, `gpt-4-turbo`, `gpt-3.5-turbo`
+
+The provider is auto-detected from the model name (models starting with `gpt-` use OpenAI, others use Gemini).
+
+### Agent-side AI
+
+Use your own API keys for full control over AI costs and model selection.
+
+```json
+// agent.json
+{
+  "env": {
+    "gemini_api_key": "AIzaSy...",
+    "ai_provider": "gemini"  // optional, auto-detected from model
+  }
+}
+```
+
+Or for OpenAI:
+
+```json
+{
+  "env": {
+    "openai_api_key": "sk-...",
+    "ai_provider": "openai"  // optional
+  }
+}
+```
+
+**Benefits:**
+- ✅ Full control over API costs
+- ✅ Use any model you have access to
+- ✅ Works even if platform AI is unavailable
+- ✅ Direct API calls (no platform proxy)
+
+**Trade-offs:**
+- ⚠️ You manage your own API keys
+- ⚠️ You pay for your own usage
+- ⚠️ Keys stored in agent configuration
+
+### Choosing Between Modes
+
+| Feature | Platform-side | Agent-side |
+|---------|--------------|------------|
+| Setup | None | Add API key to env |
+| Cost | Platform pays | You pay |
+| Security | Keys on platform | Keys in agent config |
+| Flexibility | Platform models only | Any model you have |
+| Best for | Most users | Power users, custom models |
+
+---
+
 ## 🌍 Environment Variables
 
 Environment variables are available via `ctx.env` as `Record<string, unknown>`. Use the provided utility functions for safe type conversion:
@@ -229,6 +308,15 @@ export default defineAgent({
 
 ## 📋 Changelog
 
+### v0.0.10 (Latest)
+
+**🤖 AI Provider - Hybrid Mode**
+- **NEW:** `ctx.ai.chat()` now fully implemented with hybrid mode support
+- **Platform-side AI:** Uses platform API keys (Gemini + OpenAI)
+- **Agent-side AI:** Use your own API keys via environment variables
+- Auto-detects provider from model name or explicit `ai_provider` env variable
+- Direct API calls to Gemini/OpenAI when using agent-side mode
+
 ### v0.0.9 (Breaking Changes)
 
 **🔄 Environment Variables Type Change**
@@ -279,6 +367,8 @@ const messages = ctx.queue._getMessages()
 * Use environment variable utilities (`getEnvString`, `getEnvInt`, etc.) for type safety
 * Keep agent logic simple and focused
 * Treat `ctx` as your only runtime interface
+* Use Platform-side AI for most cases (simpler, no key management)
+* Use Agent-side AI when you need custom models or cost control
 
 ### 📚 Migration
 
@@ -291,6 +381,7 @@ const messages = ctx.queue._getMessages()
 * Call SaaS APIs directly (`fetch(...)`)
 * Implement your own heartbeat or polling
 * Store sensitive logic outside `ctx.env`
+* Hardcode API keys in your code (use environment variables)
 
 ---
 
@@ -414,7 +505,7 @@ export default defineAgent({
 
 This SDK is designed to support:
 
-* Multi-provider AI (OpenAI, Claude, local LLM)
+* Multi-provider AI (OpenAI, Claude, local LLM) ✅ **Implemented**
 * Workflow chaining
 * Human-in-the-loop systems
 * Browser automation (Playwright)

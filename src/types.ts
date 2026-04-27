@@ -56,6 +56,8 @@ export interface RuntimeConfig {
     stopped_url: string
     /** Heartbeat interval in milliseconds */
     heartbeat_interval_ms: number
+    /** AI chat endpoint URL (optional, defaults to platform endpoint) */
+    ai_url?: string
 }
 
 /**
