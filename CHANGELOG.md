@@ -7,6 +7,98 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.0.12] - 2026-04-28
+
+### Changed
+
+- **Environment variable schema** — `agent.json` env field now uses array of objects format with full schema definition
+- **Documentation** — updated all examples and documentation to reflect correct env schema format
+
+### Environment Variable Schema
+
+The `env` field in `agent.json` is now an array of objects with the following structure:
+
+```json
+{
+  "env": [
+    {
+      "name": "variable_name",
+      "type": "string" | "boolean" | "number" | "password",
+      "label": "Human-readable label",
+      "description": "Detailed description",
+      "default": "default_value",
+      "required": true | false
+    }
+  ]
+}
+```
+
+### Benefits
+
+- **Type Safety**: Platform validates values based on declared type
+- **UI Generation**: Web UI automatically generates appropriate form fields
+- **Self-Documenting**: Labels and descriptions help users understand each variable
+- **Password Security**: Type `"password"` hides sensitive values in UI
+- **Default Values**: Clear declaration of default values for each variable
+
+### Migration from v0.0.11
+
+If you have an `agent.json` with the old format:
+
+```json
+{
+  "env": {
+    "mode": "normal",
+    "enable_feature": true
+  }
+}
+```
+
+Update to the new format:
+
+```json
+{
+  "env": [
+    {
+      "name": "mode",
+      "type": "string",
+      "label": "Operation Mode",
+      "description": "Agent operation mode",
+      "default": "normal",
+      "required": false
+    },
+    {
+      "name": "enable_feature",
+      "type": "boolean",
+      "label": "Enable Feature",
+      "description": "Enable or disable the feature",
+      "default": true,
+      "required": false
+    }
+  ]
+}
+```
+
+---
+
+## [0.0.11] - 2026-04-28
+
+### Changed
+
+- **Environment variable flow** — clarified that default env comes from database (`lts_app_ai_agent_versions.env`), not from reading `agent.json` at runtime
+- **Runtime behavior** — agent runtime receives env via `AGENT_CTX` from platform, does NOT read `agent.json` for env values
+- **Documentation** — updated README to reflect correct env flow
+
+### How It Works
+
+1. **Agent Push**: When agent is pushed, `agent.json` env is stored in `lts_app_ai_agent_versions.env` (JSON string)
+2. **Agent Run**: Platform queries `lts_app_ai_agent_versions.env`, parses it, and includes in `agentConfig.env`
+3. **Agent Runtime**: Receives env via `AGENT_CTX` environment variable (no need to read `agent.json`)
+4. **Immediate Execution**: Agent can run immediately with default env from database
+5. **User Override**: User can override env via Web UI, which updates `config_json` and sends `config_updated` via WebSocket
+
+---
+
 ## [0.0.8] - 2026-04-23
 
 ### Added

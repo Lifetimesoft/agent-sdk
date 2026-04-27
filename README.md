@@ -196,7 +196,19 @@ Or for OpenAI:
 
 ## 🌍 Environment Variables
 
-Environment variables are available via `ctx.env` as `Record<string, unknown>`. Use the provided utility functions for safe type conversion:
+Environment variables are available via `ctx.env` as `Record<string, unknown>`. 
+
+### How Environment Variables Work
+
+1. **Define Schema**: In `agent.json`, define env variables as an array with schema (name, type, label, description, default, required)
+2. **Push to Registry**: When you push an agent, the env schema is stored in the database (`lts_app_ai_agent_versions.env`)
+3. **Agent Runtime**: When agent runs, the platform loads env schema from database, applies defaults, and injects via `AGENT_CTX`
+4. **User Override**: Users can override env values via Web UI, which updates the running instance
+5. **No File Reading**: Agent runtime does NOT read `agent.json` or `.env` files - all env comes from the platform
+
+### Utility Functions
+
+Use the provided utility functions for safe type conversion:
 
 ### Utility Functions
 
@@ -306,9 +318,135 @@ export default defineAgent({
 
 ---
 
+## 📋 agent.json
+
+The `agent.json` file in your agent project defines metadata and default configuration:
+
+```json
+{
+  "name": "my-agent",
+  "version": "1.0.0",
+  "description": "My awesome agent",
+  "runtime": "node20",
+  "main": "dist/index.js",
+  "public": false,
+  "input": {
+    "type": "none"
+  },
+  "output": {
+    "type": "none"
+  },
+  "capabilities": {
+    "ai": {
+      "required": true,
+      "features": ["chat"]
+    }
+  },
+  "env": [
+    {
+      "name": "mode",
+      "type": "string",
+      "label": "Operation Mode",
+      "description": "Agent operation mode",
+      "default": "normal",
+      "required": false
+    },
+    {
+      "name": "enable_feature",
+      "type": "boolean",
+      "label": "Enable Feature",
+      "description": "Enable or disable the feature",
+      "default": true,
+      "required": false
+    },
+    {
+      "name": "max_tasks",
+      "type": "number",
+      "label": "Max Tasks",
+      "description": "Maximum number of tasks to process",
+      "default": 10,
+      "required": false
+    },
+    {
+      "name": "api_key",
+      "type": "password",
+      "label": "API Key",
+      "description": "API authentication key",
+      "required": false
+    }
+  ],
+  "keywords": ["example"]
+}
+```
+
+### Environment Variable Schema
+
+Each environment variable in the `env` array has the following structure:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `name` | string | Variable name (use lowercase snake_case) |
+| `type` | string | Data type: `"string"`, `"boolean"`, `"number"`, or `"password"` |
+| `label` | string | Human-readable label for Web UI |
+| `description` | string | Detailed description of the variable |
+| `default` | any | Default value (optional) |
+| `required` | boolean | Whether the variable is required |
+
+### What Happens When You Push
+
+1. `lifectl ai agent push` reads `agent.json`
+2. Sends metadata to platform (including `env` field)
+3. Platform stores `env` in database (`lts_app_ai_agent_versions.env`)
+4. When agent runs, platform loads env from database and injects via `AGENT_CTX`
+
+### Important Notes
+
+- ✅ `agent.json` is read **only during push** (by lifectl)
+- ✅ Default env is stored in **database**, not in agent files
+- ✅ Agent runtime receives env via **`AGENT_CTX`** from platform
+- ❌ Agent runtime does **NOT** read `agent.json` for env values
+- ❌ Agent runtime does **NOT** read `.env` files
+
+### Environment Variable Priority
+
+```
+agent.json env defaults (stored in database) < User overrides (via Web UI)
+```
+
+When you push an agent:
+1. Platform parses the `env` array from `agent.json`
+2. Extracts `default` values from each env variable definition
+3. Stores the complete env schema in database (`lts_app_ai_agent_versions.env`)
+
+When agent runs:
+1. Platform loads env schema from database
+2. Applies default values for each variable
+3. Merges with user overrides from Web UI (user values take precedence)
+4. Injects final env into agent via `AGENT_CTX`
+
+Users can override any env value through the Web UI, which updates the running instance dynamically.
+
+---
+
 ## 📋 Changelog
 
-### v0.0.10 (Latest)
+### v0.0.12 (Latest)
+
+**📋 Environment Variable Schema Update**
+- **CHANGED:** `agent.json` env field now uses array of objects format with full schema definition
+- **NEW:** Each env variable includes: `name`, `type`, `label`, `description`, `default`, `required`
+- **IMPROVED:** Platform can now generate UI forms automatically from env schema
+- **IMPROVED:** Type validation and password field support
+
+### v0.0.11
+
+**🔄 Environment Variable Flow Clarification**
+- **CLARIFIED:** Default env comes from database (`lts_app_ai_agent_versions.env`), not from reading `agent.json` at runtime
+- **CLARIFIED:** Agent runtime receives env via `AGENT_CTX` from platform
+- **CLARIFIED:** Agent runtime does NOT read `agent.json` or `.env` files for env values
+- **UPDATED:** Documentation to reflect correct env flow
+
+### v0.0.10
 
 **🤖 AI Provider - Hybrid Mode**
 - **NEW:** `ctx.ai.chat()` now fully implemented with hybrid mode support
