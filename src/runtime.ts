@@ -72,18 +72,6 @@ async function main(): Promise<void> {
     debug: (...args: unknown[]) => console.debug(`[${fmtDate()}] [job:${jobId}] [agent:debug]`, ...args),
   })
 
-  const ctx: Context = {
-    ...ctxBase,
-    log: makeLogger(""),
-    ai: buildAiProvider(runtimeCfg, accessToken, ctxBase.env),
-    storage: buildStorageProvider(runId, runtimeCfg, accessToken),
-    queue: {
-      push: async () => {
-        throw new Error("[runtime] ctx.queue.push() is not configured in this runtime.")
-      },
-    },
-  }
-
   // resolve agent entrypoint:
   // 1. agent.json "main" field
   // 2. package.json "main" field
@@ -100,6 +88,18 @@ async function main(): Promise<void> {
       if (pkg.main) entrypoint = pkg.main
     }
   } catch { /* use fallback */ }
+
+  const ctx: Context = {
+    ...ctxBase,
+    log: makeLogger(""),
+    ai: buildAiProvider(runtimeCfg, accessToken, ctxBase.env),
+    storage: buildStorageProvider(runId, runtimeCfg, accessToken),
+    queue: {
+      push: async () => {
+        throw new Error("[runtime] ctx.queue.push() is not configured in this runtime.")
+      },
+    },
+  }
 
   // load agent module from cwd
   const agentEntry = path.resolve(process.cwd(), entrypoint)
@@ -175,7 +175,7 @@ async function main(): Promise<void> {
         console.log("[runtime] config_updated received — reloading config:", JSON.stringify(msg.config))
         // update full ctx.config with new config from platform
         ctx.config = msg.config as Context["config"]
-        // update ctx.env if present in config
+        // update ctx.env if present in config (platform env overrides default env from version)
         if ((msg.config as { env?: Record<string, unknown> })?.env) {
           ctx.env = (msg.config as { env: Record<string, unknown> }).env
           console.log("[runtime] env updated:", JSON.stringify(ctx.env))

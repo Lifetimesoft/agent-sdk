@@ -1,0 +1,73 @@
+{
+  "name": "example-agent",
+  "version": "1.0.0",
+  "description": "Example agent with default environment variables",
+  "runtime": "node20",
+  "main": "dist/index.js",
+  "public": false,
+  "version_public": false,
+  "pull_public": false,
+  "input": {
+    "type": "none"
+  },
+  "output": {
+    "type": "none"
+  },
+  "capabilities": {
+    "ai": {
+      "required": false,
+      "features": ["chat"]
+    }
+  },
+  "env": [
+    {
+      "name": "mode",
+      "type": "string",
+      "label": "Operation Mode",
+      "description": "Agent operation mode: development, staging, or production",
+      "default": "development",
+      "required": false
+    },
+    {
+      "name": "enable_logging",
+      "type": "boolean",
+      "label": "Enable Logging",
+      "description": "Enable or disable detailed logging",
+      "default": true,
+      "required": false
+    },
+    {
+      "name": "max_retries",
+      "type": "number",
+      "label": "Max Retries",
+      "description": "Maximum number of retry attempts for failed operations",
+      "default": 3,
+      "required": false
+    },
+    {
+      "name": "timeout_seconds",
+      "type": "number",
+      "label": "Timeout (seconds)",
+      "description": "Operation timeout in seconds",
+      "default": 30,
+      "required": false
+    },
+    {
+      "name": "api_endpoint",
+      "type": "string",
+      "label": "API Endpoint",
+      "description": "External API endpoint URL",
+      "default": "https://api.example.com",
+      "required": false
+    },
+    {
+      "name": "api_key",
+      "type": "password",
+      "label": "API Key",
+      "description": "API authentication key (sensitive)",
+      "required": false
+    }
+  ],
+  "keywords": ["example", "demo"],
+  "_comment": "The 'env' field is read during 'lifectl ai agent push' and stored in the database. Agent runtime receives env from platform via AGENT_CTX, not by reading this file."
+}
