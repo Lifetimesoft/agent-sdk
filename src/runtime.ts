@@ -92,8 +92,8 @@ async function main(): Promise<void> {
   const ctx: Context = {
     ...ctxBase,
     log: makeLogger(""),
-    ai: buildAiProvider(runtimeCfg, accessToken, ctxBase.env),
-    storage: buildStorageProvider(runId, runtimeCfg, accessToken),
+    ai: buildAiProvider(runtimeCfg, ctxBase.env),
+    storage: buildStorageProvider(runId, runtimeCfg),
     queue: {
       push: async () => {
         throw new Error("[runtime] ctx.queue.push() is not configured in this runtime.")
@@ -172,13 +172,13 @@ async function main(): Promise<void> {
           console.error(`[${fmtDate()}] [job:${jobId}] [agent:error] agent.run() threw during trigger:`, errMsg)
         })
       } else if (msg.type === "config_updated" && msg.config) {
-        console.log("[runtime] config_updated received — reloading config:", JSON.stringify(msg.config))
+        console.log("[runtime] config_updated received — reloading scheduler")
         // update full ctx.config with new config from platform
         ctx.config = msg.config as Context["config"]
         // update ctx.env if present in config (platform env overrides default env from version)
         if ((msg.config as { env?: Record<string, unknown> })?.env) {
           ctx.env = (msg.config as { env: Record<string, unknown> }).env
-          console.log("[runtime] env updated:", JSON.stringify(ctx.env))
+          console.log("[runtime] env updated")
         }
         // extract scheduler config for scheduler loop
         schedulerConfig = (msg.config as { scheduler?: SchedulerConfig })?.scheduler ?? { type: "none" }
@@ -204,7 +204,7 @@ async function main(): Promise<void> {
     console.log(`[runtime] ${signal} received, shutting down...`)
     abortController.abort()
     wsConnection?.close()
-    await notifyStopped(runId, runtimeCfg, accessToken)
+    await notifyStopped(runId, runtimeCfg)
     process.exit(0)
   }
   process.on("SIGTERM", () => { void shutdown("SIGTERM") })
@@ -220,7 +220,7 @@ async function main(): Promise<void> {
 
   // completed normally
   wsConnection?.close()
-  await notifyStopped(runId, runtimeCfg, accessToken)
+  await notifyStopped(runId, runtimeCfg)
 }
 
 // ─── WebSocket Heartbeat ──────────────────────────────────────────────────────
@@ -292,6 +292,46 @@ function startWebSocketHeartbeat(
 }
 
 /**
+ * Get a valid access token, refreshing if needed.
+ * Always reads from process.env so it picks up the latest refreshed token.
+ */
+async function getValidToken(): Promise<string | undefined> {
+  const current = process.env.AGENT_ACCESS_TOKEN
+  const refreshed = await refreshTokenIfNeeded(current)
+  return refreshed
+}
+
+/**
+ * Persist refreshed tokens to ~/.lifectl/config.json so lifectl uses
+ * the new tokens on next agent restart (instead of the expired ones).
+ * Uses the same path convention as lifectl/src/utils/config.ts.
+ */
+async function persistTokens(accessToken: string, refreshToken?: string): Promise<void> {
+  try {
+    // same path as lifectl: os.homedir()/.lifectl/config.json
+    const homeDir = process.env.HOME ?? process.env.USERPROFILE ?? ""
+    const configPath = path.join(homeDir, ".lifectl", "config.json")
+
+    let config: Record<string, unknown> = {}
+    try {
+      config = JSON.parse(fs.readFileSync(configPath, "utf-8"))
+    } catch { /* file may not exist yet — start fresh */ }
+
+    config.access_token = accessToken
+    if (refreshToken) config.refresh_token = refreshToken
+
+    fs.mkdirSync(path.dirname(configPath), { recursive: true })
+    // write atomically via temp file to avoid partial writes
+    const tmpPath = configPath + ".tmp"
+    fs.writeFileSync(tmpPath, JSON.stringify(config, null, 2), "utf-8")
+    fs.renameSync(tmpPath, configPath)
+  } catch (e) {
+    // best-effort — don't break the agent if config write fails
+    console.error("[runtime] Failed to persist tokens to config:", e)
+  }
+}
+
+/**
  * Attempt to refresh the access token using the refresh token stored in AGENT_REFRESH_TOKEN env.
  * Returns the new access token if successful, or undefined if refresh is not possible.
  */
@@ -332,6 +372,8 @@ async function refreshTokenIfNeeded(currentToken: string | undefined): Promise<s
       // update env vars so future reconnects use the new tokens
       process.env.AGENT_ACCESS_TOKEN = data.access_token
       if (data.refresh_token) process.env.AGENT_REFRESH_TOKEN = data.refresh_token
+      // persist to config file so lifectl uses the new tokens on next restart
+      await persistTokens(data.access_token, data.refresh_token)
       return data.access_token
     }
   } catch (e) {
@@ -344,11 +386,11 @@ async function refreshTokenIfNeeded(currentToken: string | undefined): Promise<s
 async function notifyStopped(
   runId: string,
   cfg: RuntimeConfig | undefined,
-  accessToken: string | undefined,
   lastError?: string
 ): Promise<void> {
   if (!cfg?.stopped_url) return
-  await post(cfg.stopped_url, { run_id: runId, last_error: lastError ?? null }, accessToken).catch(() => {
+  const token = await getValidToken()
+  await post(cfg.stopped_url, { run_id: runId, last_error: lastError ?? null }, token).catch(() => {
     // best-effort
   })
 }
@@ -358,7 +400,6 @@ async function notifyStopped(
 function buildStorageProvider(
   runId: string,
   cfg: RuntimeConfig | undefined,
-  accessToken: string | undefined
 ) {
   // derive storage base URL from stopped_url
   // e.g. .../agents/stopped → .../agents
@@ -369,16 +410,19 @@ function buildStorageProvider(
   return {
     get: async <T = unknown>(key: string): Promise<T | null> => {
       if (!base) throw new Error("[runtime] storage is not configured (no runtime config in ctx.meta)")
-      const res = await post(`${base}/storage/get`, { run_id: runId, key }, accessToken) as { value?: T }
+      const token = await getValidToken()
+      const res = await post(`${base}/storage/get`, { run_id: runId, key }, token) as { value?: T }
       return res?.value ?? null
     },
     set: async <T = unknown>(key: string, value: T, opts?: { ttl?: number }): Promise<void> => {
       if (!base) throw new Error("[runtime] storage is not configured (no runtime config in ctx.meta)")
-      await post(`${base}/storage/set`, { run_id: runId, key, value, ttl: opts?.ttl }, accessToken)
+      const token = await getValidToken()
+      await post(`${base}/storage/set`, { run_id: runId, key, value, ttl: opts?.ttl }, token)
     },
     delete: async (key: string): Promise<void> => {
       if (!base) throw new Error("[runtime] storage is not configured (no runtime config in ctx.meta)")
-      await post(`${base}/storage/delete`, { run_id: runId, key }, accessToken)
+      const token = await getValidToken()
+      await post(`${base}/storage/delete`, { run_id: runId, key }, token)
     },
   }
 }
@@ -387,7 +431,6 @@ function buildStorageProvider(
 
 function buildAiProvider(
   cfg: RuntimeConfig | undefined,
-  accessToken: string | undefined,
   env: Record<string, unknown>
 ) {
   return {
@@ -406,8 +449,8 @@ function buildAiProvider(
         return callAgentSideAi(req, geminiApiKey, openaiApiKey, agentProvider)
       }
 
-      // Platform-side mode: call platform API endpoint
-      return callPlatformSideAi(req, cfg, accessToken)
+      // Platform-side mode: call platform API endpoint (reads token dynamically)
+      return callPlatformSideAi(req, cfg)
     },
   }
 }
@@ -443,7 +486,9 @@ async function callAgentSideAi(
 }
 
 /**
- * Platform-side AI: Agent calls platform API endpoint
+ * Platform-side AI: Agent calls platform API endpoint.
+ * Reads AGENT_ACCESS_TOKEN from process.env dynamically so it always uses
+ * the latest refreshed token (refreshTokenIfNeeded updates process.env on reconnect).
  */
 async function callPlatformSideAi(
   req: {
@@ -452,10 +497,11 @@ async function callPlatformSideAi(
     temperature?: number
   },
   cfg: RuntimeConfig | undefined,
-  accessToken: string | undefined
 ): Promise<string> {
   const aiUrl = cfg?.ai_url || "https://app.lifetimesoft.com/cli/ai-account-management/ai/chat"
 
+  // Read token dynamically and refresh if expired
+  const accessToken = await getValidToken()
   if (!accessToken) {
     throw new Error("[runtime] Platform-side AI requires authentication (missing access token)")
   }
@@ -478,7 +524,37 @@ async function callPlatformSideAi(
     throw new Error(`[runtime] Platform-side AI failed (${res.status}): ${errorText}`)
   }
 
-  const data = await res.json() as { success: boolean; response?: string; message?: string }
+  const data = await res.json() as { success: boolean; response?: string; message?: string; code?: number }
+
+  // app-main AuthCli returns HTTP 200 with code: 401 (invalid) or code: 406 (expired)
+  // refresh token and retry once
+  if (data.code === 401 || data.code === 406) {
+    const refreshed = await refreshTokenIfNeeded(accessToken)
+    if (refreshed && refreshed !== accessToken) {
+      const retryRes = await fetch(aiUrl, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: refreshed,
+        },
+        body: JSON.stringify({
+          messages: req.messages,
+          model: req.model,
+          temperature: req.temperature,
+        }),
+      })
+      if (!retryRes.ok) {
+        const errorText = await retryRes.text().catch(() => "unknown error")
+        throw new Error(`[runtime] Platform-side AI failed after token refresh (${retryRes.status}): ${errorText}`)
+      }
+      const retryData = await retryRes.json() as { success: boolean; response?: string; message?: string }
+      if (!retryData.success || !retryData.response) {
+        throw new Error(`[runtime] Platform-side AI failed after token refresh: ${retryData.message || "no response"}`)
+      }
+      return retryData.response
+    }
+    throw new Error(`[runtime] Platform-side AI unauthorized (code: ${data.code}) — please re-login`)
+  }
 
   if (!data.success || !data.response) {
     throw new Error(`[runtime] Platform-side AI failed: ${data.message || "no response"}`)
@@ -588,6 +664,12 @@ async function callOpenAIDirect(
 
 // ─── HTTP helper ──────────────────────────────────────────────────────────────
 
+/**
+ * POST to SaaS API with automatic token refresh on 401/406.
+ * app-main AuthCli always returns HTTP 200 with body code:
+ *   { code: 401, success: false } → invalid token
+ *   { code: 406, success: false } → expired token
+ */
 async function post(url: string, body: unknown, accessToken: string | undefined): Promise<unknown> {
   const res = await fetch(url, {
     method: "POST",
@@ -598,7 +680,29 @@ async function post(url: string, body: unknown, accessToken: string | undefined)
     body: JSON.stringify(body),
   })
   if (!res.ok) throw new Error(`POST ${url} returned ${res.status}`)
-  return res.json()
+
+  const data = await res.json() as { code?: number; success?: boolean; [key: string]: unknown }
+
+  // detect expired/invalid token — refresh and retry once
+  if ((data.code === 401 || data.code === 406) && accessToken) {
+    const refreshed = await refreshTokenIfNeeded(accessToken)
+    if (refreshed && refreshed !== accessToken) {
+      // retry with new token
+      const retryRes = await fetch(url, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: refreshed,
+        },
+        body: JSON.stringify(body),
+      })
+      if (!retryRes.ok) throw new Error(`POST ${url} returned ${retryRes.status}`)
+      return retryRes.json()
+    }
+    throw new Error(`POST ${url} unauthorized (code: ${data.code})`)
+  }
+
+  return data
 }
 
 // ─── Entry ────────────────────────────────────────────────────────────────────
