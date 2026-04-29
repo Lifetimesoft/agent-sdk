@@ -28,3 +28,7 @@ export type {
   RunMeta,
   RuntimeConfig,
 } from "./types"
+
+// Testing utilities — also available via @lifetimesoft/agent-sdk/testing
+export { createMockContext } from "./testing"
+export type { MockContextOptions, MockStorageProvider, MockQueueProvider } from "./testing"
