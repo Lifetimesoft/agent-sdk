@@ -18,6 +18,19 @@ export interface AiProvider {
         model?: string
         temperature?: number
     }): Promise<string>
+
+    /**
+     * Generate an image from a text prompt.
+     * Returns a public URL of the generated image.
+     */
+    image(req: {
+        prompt: string
+        model?: string
+        size?: string       // e.g. "1024x1024", "1024x1792" (portrait 9:16)
+        quality?: string    // e.g. "standard", "hd"
+        style?: string      // e.g. "vivid", "natural" (OpenAI only)
+        n?: number          // number of images (default: 1)
+    }): Promise<string>     // returns public image URL
 }
 
 /**

@@ -439,18 +439,32 @@ function buildAiProvider(
       model?: string
       temperature?: number
     }): Promise<string> => {
-      // Check for agent-side AI configuration
       const geminiApiKey = env.gemini_api_key as string | undefined
       const openaiApiKey = env.openai_api_key as string | undefined
       const agentProvider = env.ai_provider as string | undefined
 
       if (geminiApiKey || openaiApiKey || agentProvider) {
-        // Agent-side mode: call AI provider directly from agent
         return callAgentSideAi(req, geminiApiKey, openaiApiKey, agentProvider)
       }
-
-      // Platform-side mode: call platform API endpoint (reads token dynamically)
       return callPlatformSideAi(req, cfg)
+    },
+
+    image: async (req: {
+      prompt: string
+      model?: string
+      size?: string
+      quality?: string
+      style?: string
+      n?: number
+    }): Promise<string> => {
+      const geminiApiKey = env.gemini_api_key as string | undefined
+      const openaiApiKey = env.openai_api_key as string | undefined
+      const agentProvider = env.ai_provider as string | undefined
+
+      if (geminiApiKey || openaiApiKey || agentProvider) {
+        return callAgentSideImage(req, geminiApiKey, openaiApiKey, agentProvider)
+      }
+      return callPlatformSideImage(req, cfg)
     },
   }
 }
@@ -561,6 +575,210 @@ async function callPlatformSideAi(
   }
 
   return data.response
+}
+
+/**
+ * Platform-side Image: Agent calls platform image API endpoint.
+ * Returns a public URL of the generated image.
+ */
+async function callPlatformSideImage(
+  req: {
+    prompt: string
+    model?: string
+    size?: string
+    quality?: string
+    style?: string
+    n?: number
+  },
+  cfg: RuntimeConfig | undefined,
+): Promise<string> {
+  const imageUrl = cfg?.ai_url
+    ? cfg.ai_url.replace(/\/chat$/, "/image")
+    : "https://app.lifetimesoft.com/cli/ai-account-management/ai/image"
+
+  const accessToken = await getValidToken()
+  if (!accessToken) {
+    throw new Error("[runtime] Platform-side AI image requires authentication (missing access token)")
+  }
+
+  const res = await fetch(imageUrl, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: accessToken,
+    },
+    body: JSON.stringify({
+      prompt: req.prompt,
+      model: req.model,
+      size: req.size,
+      quality: req.quality,
+      style: req.style,
+      n: req.n,
+    }),
+  })
+
+  if (!res.ok) {
+    const errorText = await res.text().catch(() => "unknown error")
+    throw new Error(`[runtime] Platform-side AI image failed (${res.status}): ${errorText}`)
+  }
+
+  const data = await res.json() as { success: boolean; url?: string; message?: string; code?: number }
+
+  // token expired — refresh and retry once
+  if (data.code === 401 || data.code === 406) {
+    const refreshed = await refreshTokenIfNeeded(accessToken)
+    if (refreshed && refreshed !== accessToken) {
+      const retryRes = await fetch(imageUrl, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: refreshed,
+        },
+        body: JSON.stringify({
+          prompt: req.prompt,
+          model: req.model,
+          size: req.size,
+          quality: req.quality,
+          style: req.style,
+          n: req.n,
+        }),
+      })
+      if (!retryRes.ok) {
+        const errorText = await retryRes.text().catch(() => "unknown error")
+        throw new Error(`[runtime] Platform-side AI image failed after token refresh (${retryRes.status}): ${errorText}`)
+      }
+      const retryData = await retryRes.json() as { success: boolean; url?: string; message?: string }
+      if (!retryData.success || !retryData.url) {
+        throw new Error(`[runtime] Platform-side AI image failed after token refresh: ${retryData.message || "no url"}`)
+      }
+      return retryData.url
+    }
+    throw new Error(`[runtime] Platform-side AI image unauthorized (code: ${data.code}) — please re-login`)
+  }
+
+  if (!data.success || !data.url) {
+    throw new Error(`[runtime] Platform-side AI image failed: ${data.message || "no url"}`)
+  }
+
+  return data.url
+}
+
+/**
+ * Agent-side Image: Agent calls image provider directly using its own API key.
+ * Returns a public URL (OpenAI) or base64 data URL (Gemini).
+ */
+async function callAgentSideImage(
+  req: {
+    prompt: string
+    model?: string
+    size?: string
+    quality?: string
+    style?: string
+    n?: number
+  },
+  geminiApiKey: string | undefined,
+  openaiApiKey: string | undefined,
+  provider: string | undefined
+): Promise<string> {
+  const isOpenAI = req.model?.startsWith("gpt-") || req.model?.startsWith("dall-e") || provider === "openai"
+  const selectedProvider = isOpenAI ? "openai" : "gemini"
+
+  if (selectedProvider === "openai") {
+    if (!openaiApiKey) {
+      throw new Error("[runtime] Agent-side image: openai_api_key not found in agent env")
+    }
+    return callOpenAIImageDirect(req, openaiApiKey)
+  } else {
+    if (!geminiApiKey) {
+      throw new Error("[runtime] Agent-side image: gemini_api_key not found in agent env")
+    }
+    return callGeminiImageDirect(req, geminiApiKey)
+  }
+}
+
+/**
+ * Call OpenAI image API directly (Agent-side)
+ */
+async function callOpenAIImageDirect(
+  req: {
+    prompt: string
+    model?: string
+    size?: string
+    quality?: string
+    style?: string
+    n?: number
+  },
+  apiKey: string
+): Promise<string> {
+  const model = req.model || "dall-e-3"
+  const body: Record<string, unknown> = {
+    model,
+    prompt: req.prompt,
+    n: req.n ?? 1,
+    size: req.size ?? "1024x1024",
+    response_format: "url",
+  }
+  if (req.quality) body.quality = req.quality
+  if (req.style)   body.style   = req.style
+
+  const res = await fetch("https://api.openai.com/v1/images/generations", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify(body),
+  })
+
+  if (!res.ok) {
+    const errorText = await res.text().catch(() => "unknown error")
+    throw new Error(`[runtime] OpenAI image API error (${res.status}): ${errorText}`)
+  }
+
+  const data = await res.json() as any
+  const url = data?.data?.[0]?.url
+  if (!url) throw new Error("[runtime] OpenAI image API returned no URL")
+  return url
+}
+
+/**
+ * Call Gemini image API directly (Agent-side)
+ * Returns a base64 data URL since Gemini doesn't provide public URLs.
+ */
+async function callGeminiImageDirect(
+  req: {
+    prompt: string
+    model?: string
+    n?: number
+  },
+  apiKey: string
+): Promise<string> {
+  const model = req.model || "imagen-3.0-generate-002"
+
+  const res = await fetch(
+    `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        contents: [{ parts: [{ text: req.prompt }] }],
+        generationConfig: { responseModalities: ["IMAGE", "TEXT"] },
+      }),
+    }
+  )
+
+  if (!res.ok) {
+    const errorText = await res.text().catch(() => "unknown error")
+    throw new Error(`[runtime] Gemini image API error (${res.status}): ${errorText}`)
+  }
+
+  const data = await res.json() as any
+  const parts = data?.candidates?.[0]?.content?.parts ?? []
+  const imagePart = parts.find((p: any) => p.inlineData?.mimeType?.startsWith("image/"))
+  if (!imagePart) throw new Error("[runtime] Gemini image API returned no image data")
+
+  const mimeType: string = imagePart.inlineData.mimeType ?? "image/png"
+  return `data:${mimeType};base64,${imagePart.inlineData.data}`
 }
 
 /**

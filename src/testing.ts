@@ -154,6 +154,12 @@ export function createMockContext<TInput = unknown>(
           "Pass a custom `ai` option to createMockContext()."
       )
     },
+    image: async () => {
+      throw new Error(
+        "[agent-sdk] ctx.ai.image() is not implemented in mock context. " +
+          "Pass a custom `ai` option to createMockContext()."
+      )
+    },
     ...ai,
   }
 
