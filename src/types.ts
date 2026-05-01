@@ -30,6 +30,7 @@ export interface AiProvider {
         quality?: string    // e.g. "standard", "hd"
         style?: string      // e.g. "vivid", "natural" (OpenAI only)
         n?: number          // number of images (default: 1)
+        image_url?: string  // reference image URL — passed to n8n for img2img style generation
     }): Promise<string>     // returns public image URL
 }
 

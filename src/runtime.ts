@@ -89,10 +89,18 @@ async function main(): Promise<void> {
     }
   } catch { /* use fallback */ }
 
+  // pending image generation promises — keyed by job_id
+  // resolved when DO sends image_ready message via WebSocket
+  const pendingImageJobs = new Map<string, {
+    resolve: (url: string) => void
+    reject: (err: Error) => void
+    timer: ReturnType<typeof setTimeout>
+  }>()
+
   const ctx: Context = {
     ...ctxBase,
     log: makeLogger(""),
-    ai: buildAiProvider(runtimeCfg, ctxBase.env),
+    ai: buildAiProvider(runtimeCfg, ctxBase.env, runId, pendingImageJobs),
     storage: buildStorageProvider(runId, runtimeCfg),
     queue: {
       push: async () => {
@@ -157,9 +165,10 @@ async function main(): Promise<void> {
   }
 
   let onWsMessage: ((data: string) => void) | undefined
+
   onWsMessage = (data: string) => {
     try {
-      const msg = JSON.parse(data) as { type?: string; scheduler?: unknown; config?: unknown }
+      const msg = JSON.parse(data) as { type?: string; scheduler?: unknown; config?: unknown; job_id?: string; image_url?: string | null; success?: boolean; message?: string | null }
       if (msg.type === "trigger" && schedulerConfig.type === "none") {
         const jobId = Math.floor(Math.random() * 0xffffff).toString(16).padStart(6, "0")
         console.log(`[${fmtDate()}] [job:${jobId}] [agent:info] [scheduler] start job ${jobId}`)
@@ -183,6 +192,18 @@ async function main(): Promise<void> {
         // extract scheduler config for scheduler loop
         schedulerConfig = (msg.config as { scheduler?: SchedulerConfig })?.scheduler ?? { type: "none" }
         startSchedulerLoop(schedulerConfig)
+      } else if (msg.type === "image_ready" && msg.job_id) {
+        // image generation complete — resolve the pending promise for this job
+        const pending = pendingImageJobs.get(msg.job_id)
+        if (pending) {
+          clearTimeout(pending.timer)
+          pendingImageJobs.delete(msg.job_id)
+          if (msg.success && msg.image_url) {
+            pending.resolve(msg.image_url)
+          } else {
+            pending.reject(new Error(`[runtime] Image generation failed: ${msg.message || "unknown error"}`))
+          }
+        }
       }
     } catch {
       // ignore malformed messages
@@ -431,7 +452,13 @@ function buildStorageProvider(
 
 function buildAiProvider(
   cfg: RuntimeConfig | undefined,
-  env: Record<string, unknown>
+  env: Record<string, unknown>,
+  runId: string,
+  pendingImageJobs: Map<string, {
+    resolve: (url: string) => void
+    reject: (err: Error) => void
+    timer: ReturnType<typeof setTimeout>
+  }>
 ) {
   return {
     chat: async (req: {
@@ -456,6 +483,7 @@ function buildAiProvider(
       quality?: string
       style?: string
       n?: number
+      image_url?: string
     }): Promise<string> => {
       const geminiApiKey = env.gemini_api_key as string | undefined
       const openaiApiKey = env.openai_api_key as string | undefined
@@ -464,7 +492,7 @@ function buildAiProvider(
       if (geminiApiKey || openaiApiKey || agentProvider) {
         return callAgentSideImage(req, geminiApiKey, openaiApiKey, agentProvider)
       }
-      return callPlatformSideImage(req, cfg)
+      return callPlatformSideImage(req, cfg, runId, pendingImageJobs)
     },
   }
 }
@@ -579,7 +607,8 @@ async function callPlatformSideAi(
 
 /**
  * Platform-side Image: Agent calls platform image API endpoint.
- * Returns a public URL of the generated image.
+ * Sends run_id so the platform can notify the agent via DO WebSocket when done.
+ * Waits for the image_ready WebSocket message before resolving.
  */
 async function callPlatformSideImage(
   req: {
@@ -589,8 +618,15 @@ async function callPlatformSideImage(
     quality?: string
     style?: string
     n?: number
+    image_url?: string
   },
   cfg: RuntimeConfig | undefined,
+  runId: string,
+  pendingImageJobs: Map<string, {
+    resolve: (url: string) => void
+    reject: (err: Error) => void
+    timer: ReturnType<typeof setTimeout>
+  }>
 ): Promise<string> {
   const imageUrl = cfg?.ai_url
     ? cfg.ai_url.replace(/\/chat$/, "/image")
@@ -601,66 +637,69 @@ async function callPlatformSideImage(
     throw new Error("[runtime] Platform-side AI image requires authentication (missing access token)")
   }
 
-  const res = await fetch(imageUrl, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: accessToken,
-    },
-    body: JSON.stringify({
-      prompt: req.prompt,
-      model: req.model,
-      size: req.size,
-      quality: req.quality,
-      style: req.style,
-      n: req.n,
-    }),
-  })
+  const doRequest = async (token: string): Promise<{ success: boolean; job_id?: string; url?: string; message?: string; code?: number }> => {
+    const res = await fetch(imageUrl, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: token,
+      },
+      body: JSON.stringify({
+        prompt: req.prompt,
+        model: req.model,
+        size: req.size,
+        quality: req.quality,
+        style: req.style,
+        n: req.n,
+        run_id: runId,
+        image_url: req.image_url,
+      }),
+    })
 
-  if (!res.ok) {
-    const errorText = await res.text().catch(() => "unknown error")
-    throw new Error(`[runtime] Platform-side AI image failed (${res.status}): ${errorText}`)
+    if (!res.ok) {
+      const errorText = await res.text().catch(() => "unknown error")
+      throw new Error(`[runtime] Platform-side AI image failed (${res.status}): ${errorText}`)
+    }
+
+    return res.json() as Promise<{ success: boolean; job_id?: string; url?: string; message?: string; code?: number }>
   }
 
-  const data = await res.json() as { success: boolean; url?: string; message?: string; code?: number }
+  let data = await doRequest(accessToken)
 
   // token expired — refresh and retry once
   if (data.code === 401 || data.code === 406) {
     const refreshed = await refreshTokenIfNeeded(accessToken)
     if (refreshed && refreshed !== accessToken) {
-      const retryRes = await fetch(imageUrl, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: refreshed,
-        },
-        body: JSON.stringify({
-          prompt: req.prompt,
-          model: req.model,
-          size: req.size,
-          quality: req.quality,
-          style: req.style,
-          n: req.n,
-        }),
-      })
-      if (!retryRes.ok) {
-        const errorText = await retryRes.text().catch(() => "unknown error")
-        throw new Error(`[runtime] Platform-side AI image failed after token refresh (${retryRes.status}): ${errorText}`)
+      data = await doRequest(refreshed)
+      if (!data.success || !data.job_id) {
+        throw new Error(`[runtime] Platform-side AI image failed after token refresh: ${data.message || "no job_id"}`)
       }
-      const retryData = await retryRes.json() as { success: boolean; url?: string; message?: string }
-      if (!retryData.success || !retryData.url) {
-        throw new Error(`[runtime] Platform-side AI image failed after token refresh: ${retryData.message || "no url"}`)
-      }
-      return retryData.url
+    } else {
+      throw new Error(`[runtime] Platform-side AI image unauthorized (code: ${data.code}) — please re-login`)
     }
-    throw new Error(`[runtime] Platform-side AI image unauthorized (code: ${data.code}) — please re-login`)
   }
 
-  if (!data.success || !data.url) {
-    throw new Error(`[runtime] Platform-side AI image failed: ${data.message || "no url"}`)
+  if (!data.success || !data.job_id) {
+    throw new Error(`[runtime] Platform-side AI image failed: ${data.message || "no job_id"}`)
   }
 
-  return data.url
+  const jobId = data.job_id
+  const IMAGE_READY_TIMEOUT_MS = 120_000 // 2 minutes
+
+  console.log(`[runtime] Image job ${jobId} submitted — waiting for image_ready notification...`)
+
+  // Wait for image_ready message from DO via WebSocket
+  return new Promise<string>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      pendingImageJobs.delete(jobId)
+      reject(new Error(`[runtime] Image generation timed out after ${IMAGE_READY_TIMEOUT_MS / 1000}s (job: ${jobId})`))
+    }, IMAGE_READY_TIMEOUT_MS)
+
+    // unref so the timer doesn't keep the process alive if agent exits
+    if (typeof timer.unref === "function") timer.unref()
+
+    pendingImageJobs.set(jobId, { resolve, reject, timer })
+  })
 }
 
 /**
@@ -675,6 +714,7 @@ async function callAgentSideImage(
     quality?: string
     style?: string
     n?: number
+    image_url?: string
   },
   geminiApiKey: string | undefined,
   openaiApiKey: string | undefined,
