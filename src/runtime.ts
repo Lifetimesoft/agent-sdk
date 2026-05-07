@@ -89,10 +89,18 @@ async function main(): Promise<void> {
     }
   } catch { /* use fallback */ }
 
+  // pending image generation promises — keyed by job_id
+  // resolved when DO sends image_ready message via WebSocket
+  const pendingImageJobs = new Map<string, {
+    resolve: (url: string) => void
+    reject: (err: Error) => void
+    timer: ReturnType<typeof setTimeout>
+  }>()
+
   const ctx: Context = {
     ...ctxBase,
     log: makeLogger(""),
-    ai: buildAiProvider(runtimeCfg, ctxBase.env),
+    ai: buildAiProvider(runtimeCfg, ctxBase.env, runId, pendingImageJobs),
     storage: buildStorageProvider(runId, runtimeCfg),
     queue: {
       push: async () => {
@@ -157,9 +165,10 @@ async function main(): Promise<void> {
   }
 
   let onWsMessage: ((data: string) => void) | undefined
+
   onWsMessage = (data: string) => {
     try {
-      const msg = JSON.parse(data) as { type?: string; scheduler?: unknown; config?: unknown }
+      const msg = JSON.parse(data) as { type?: string; scheduler?: unknown; config?: unknown; job_id?: string; image_url?: string | null; success?: boolean; message?: string | null }
       if (msg.type === "trigger" && schedulerConfig.type === "none") {
         const jobId = Math.floor(Math.random() * 0xffffff).toString(16).padStart(6, "0")
         console.log(`[${fmtDate()}] [job:${jobId}] [agent:info] [scheduler] start job ${jobId}`)
@@ -183,6 +192,18 @@ async function main(): Promise<void> {
         // extract scheduler config for scheduler loop
         schedulerConfig = (msg.config as { scheduler?: SchedulerConfig })?.scheduler ?? { type: "none" }
         startSchedulerLoop(schedulerConfig)
+      } else if (msg.type === "image_ready" && msg.job_id) {
+        // image generation complete — resolve the pending promise for this job
+        const pending = pendingImageJobs.get(msg.job_id)
+        if (pending) {
+          clearTimeout(pending.timer)
+          pendingImageJobs.delete(msg.job_id)
+          if (msg.success && msg.image_url) {
+            pending.resolve(msg.image_url)
+          } else {
+            pending.reject(new Error(`[runtime] Image generation failed: ${msg.message || "unknown error"}`))
+          }
+        }
       }
     } catch {
       // ignore malformed messages
@@ -431,7 +452,13 @@ function buildStorageProvider(
 
 function buildAiProvider(
   cfg: RuntimeConfig | undefined,
-  env: Record<string, unknown>
+  env: Record<string, unknown>,
+  runId: string,
+  pendingImageJobs: Map<string, {
+    resolve: (url: string) => void
+    reject: (err: Error) => void
+    timer: ReturnType<typeof setTimeout>
+  }>
 ) {
   return {
     chat: async (req: {
@@ -439,18 +466,33 @@ function buildAiProvider(
       model?: string
       temperature?: number
     }): Promise<string> => {
-      // Check for agent-side AI configuration
       const geminiApiKey = env.gemini_api_key as string | undefined
       const openaiApiKey = env.openai_api_key as string | undefined
       const agentProvider = env.ai_provider as string | undefined
 
       if (geminiApiKey || openaiApiKey || agentProvider) {
-        // Agent-side mode: call AI provider directly from agent
         return callAgentSideAi(req, geminiApiKey, openaiApiKey, agentProvider)
       }
-
-      // Platform-side mode: call platform API endpoint (reads token dynamically)
       return callPlatformSideAi(req, cfg)
+    },
+
+    image: async (req: {
+      prompt: string
+      model?: string
+      size?: string
+      quality?: string
+      style?: string
+      n?: number
+      image_url?: string
+    }): Promise<string> => {
+      const geminiApiKey = env.gemini_api_key as string | undefined
+      const openaiApiKey = env.openai_api_key as string | undefined
+      const agentProvider = env.ai_provider as string | undefined
+
+      if (geminiApiKey || openaiApiKey || agentProvider) {
+        return callAgentSideImage(req, geminiApiKey, openaiApiKey, agentProvider)
+      }
+      return callPlatformSideImage(req, cfg, runId, pendingImageJobs)
     },
   }
 }
@@ -561,6 +603,222 @@ async function callPlatformSideAi(
   }
 
   return data.response
+}
+
+/**
+ * Platform-side Image: Agent calls platform image API endpoint.
+ * Sends run_id so the platform can notify the agent via DO WebSocket when done.
+ * Waits for the image_ready WebSocket message before resolving.
+ */
+async function callPlatformSideImage(
+  req: {
+    prompt: string
+    model?: string
+    size?: string
+    quality?: string
+    style?: string
+    n?: number
+    image_url?: string
+  },
+  cfg: RuntimeConfig | undefined,
+  runId: string,
+  pendingImageJobs: Map<string, {
+    resolve: (url: string) => void
+    reject: (err: Error) => void
+    timer: ReturnType<typeof setTimeout>
+  }>
+): Promise<string> {
+  const imageUrl = cfg?.ai_url
+    ? cfg.ai_url.replace(/\/chat$/, "/image")
+    : "https://app.lifetimesoft.com/cli/ai-account-management/ai/image"
+
+  const accessToken = await getValidToken()
+  if (!accessToken) {
+    throw new Error("[runtime] Platform-side AI image requires authentication (missing access token)")
+  }
+
+  const doRequest = async (token: string): Promise<{ success: boolean; job_id?: string; url?: string; message?: string; code?: number }> => {
+    const res = await fetch(imageUrl, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: token,
+      },
+      body: JSON.stringify({
+        prompt: req.prompt,
+        model: req.model,
+        size: req.size,
+        quality: req.quality,
+        style: req.style,
+        n: req.n,
+        run_id: runId,
+        image_url: req.image_url,
+      }),
+    })
+
+    if (!res.ok) {
+      const errorText = await res.text().catch(() => "unknown error")
+      throw new Error(`[runtime] Platform-side AI image failed (${res.status}): ${errorText}`)
+    }
+
+    return res.json() as Promise<{ success: boolean; job_id?: string; url?: string; message?: string; code?: number }>
+  }
+
+  let data = await doRequest(accessToken)
+
+  // token expired — refresh and retry once
+  if (data.code === 401 || data.code === 406) {
+    const refreshed = await refreshTokenIfNeeded(accessToken)
+    if (refreshed && refreshed !== accessToken) {
+      data = await doRequest(refreshed)
+      if (!data.success || !data.job_id) {
+        throw new Error(`[runtime] Platform-side AI image failed after token refresh: ${data.message || "no job_id"}`)
+      }
+    } else {
+      throw new Error(`[runtime] Platform-side AI image unauthorized (code: ${data.code}) — please re-login`)
+    }
+  }
+
+  if (!data.success || !data.job_id) {
+    throw new Error(`[runtime] Platform-side AI image failed: ${data.message || "no job_id"}`)
+  }
+
+  const jobId = data.job_id
+  const IMAGE_READY_TIMEOUT_MS = 120_000 // 2 minutes
+
+  console.log(`[runtime] Image job ${jobId} submitted — waiting for image_ready notification...`)
+
+  // Wait for image_ready message from DO via WebSocket
+  return new Promise<string>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      pendingImageJobs.delete(jobId)
+      reject(new Error(`[runtime] Image generation timed out after ${IMAGE_READY_TIMEOUT_MS / 1000}s (job: ${jobId})`))
+    }, IMAGE_READY_TIMEOUT_MS)
+
+    // unref so the timer doesn't keep the process alive if agent exits
+    if (typeof timer.unref === "function") timer.unref()
+
+    pendingImageJobs.set(jobId, { resolve, reject, timer })
+  })
+}
+
+/**
+ * Agent-side Image: Agent calls image provider directly using its own API key.
+ * Returns a public URL (OpenAI) or base64 data URL (Gemini).
+ */
+async function callAgentSideImage(
+  req: {
+    prompt: string
+    model?: string
+    size?: string
+    quality?: string
+    style?: string
+    n?: number
+    image_url?: string
+  },
+  geminiApiKey: string | undefined,
+  openaiApiKey: string | undefined,
+  provider: string | undefined
+): Promise<string> {
+  const isOpenAI = req.model?.startsWith("gpt-") || req.model?.startsWith("dall-e") || provider === "openai"
+  const selectedProvider = isOpenAI ? "openai" : "gemini"
+
+  if (selectedProvider === "openai") {
+    if (!openaiApiKey) {
+      throw new Error("[runtime] Agent-side image: openai_api_key not found in agent env")
+    }
+    return callOpenAIImageDirect(req, openaiApiKey)
+  } else {
+    if (!geminiApiKey) {
+      throw new Error("[runtime] Agent-side image: gemini_api_key not found in agent env")
+    }
+    return callGeminiImageDirect(req, geminiApiKey)
+  }
+}
+
+/**
+ * Call OpenAI image API directly (Agent-side)
+ */
+async function callOpenAIImageDirect(
+  req: {
+    prompt: string
+    model?: string
+    size?: string
+    quality?: string
+    style?: string
+    n?: number
+  },
+  apiKey: string
+): Promise<string> {
+  const model = req.model || "dall-e-3"
+  const body: Record<string, unknown> = {
+    model,
+    prompt: req.prompt,
+    n: req.n ?? 1,
+    size: req.size ?? "1024x1024",
+    response_format: "url",
+  }
+  if (req.quality) body.quality = req.quality
+  if (req.style)   body.style   = req.style
+
+  const res = await fetch("https://api.openai.com/v1/images/generations", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify(body),
+  })
+
+  if (!res.ok) {
+    const errorText = await res.text().catch(() => "unknown error")
+    throw new Error(`[runtime] OpenAI image API error (${res.status}): ${errorText}`)
+  }
+
+  const data = await res.json() as any
+  const url = data?.data?.[0]?.url
+  if (!url) throw new Error("[runtime] OpenAI image API returned no URL")
+  return url
+}
+
+/**
+ * Call Gemini image API directly (Agent-side)
+ * Returns a base64 data URL since Gemini doesn't provide public URLs.
+ */
+async function callGeminiImageDirect(
+  req: {
+    prompt: string
+    model?: string
+    n?: number
+  },
+  apiKey: string
+): Promise<string> {
+  const model = req.model || "imagen-3.0-generate-002"
+
+  const res = await fetch(
+    `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        contents: [{ parts: [{ text: req.prompt }] }],
+        generationConfig: { responseModalities: ["IMAGE", "TEXT"] },
+      }),
+    }
+  )
+
+  if (!res.ok) {
+    const errorText = await res.text().catch(() => "unknown error")
+    throw new Error(`[runtime] Gemini image API error (${res.status}): ${errorText}`)
+  }
+
+  const data = await res.json() as any
+  const parts = data?.candidates?.[0]?.content?.parts ?? []
+  const imagePart = parts.find((p: any) => p.inlineData?.mimeType?.startsWith("image/"))
+  if (!imagePart) throw new Error("[runtime] Gemini image API returned no image data")
+
+  const mimeType: string = imagePart.inlineData.mimeType ?? "image/png"
+  return `data:${mimeType};base64,${imagePart.inlineData.data}`
 }
 
 /**
