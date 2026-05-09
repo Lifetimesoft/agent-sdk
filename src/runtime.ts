@@ -989,16 +989,18 @@ async function resolveInputRef(
       : "https://app.lifetimesoft.com/cli/ai-account-management/agents"
 
     const token = await getValidToken()
+    const fetchUrl = `${base}/dataset/${inputRef.value}/next-item`
     try {
       // atomic claim: marks item as 'processing', returns null when no pending items left
-      const res = await fetch(`${base}/dataset/${inputRef.value}/next-item`, {
+      const res = await fetch(fetchUrl, {
         headers: {
           "Content-Type": "application/json",
           ...(token ? { Authorization: token } : {}),
         },
       })
       if (!res.ok) {
-        console.warn(`[runtime] resolveInputRef: dataset fetch failed (${res.status})`)
+        const body = await res.text().catch(() => "")
+        console.warn(`[runtime] resolveInputRef: dataset fetch failed (${res.status}) — ${body}`)
         return null
       }
       const data = await res.json() as { success: boolean; item?: unknown }
