@@ -7,7 +7,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [0.0.12] - 2026-04-28
+## [0.0.17] - 2026-05-09
+
+### Added
+
+- **`InputRef` type** — new exported type representing an external input source reference, stored in `config.input.input_ref` by the platform
+  ```ts
+  export type InputRef =
+      | { type: "dataset"; value: string }
+      // future: | { type: "api"; url: string }
+  ```
+- **`resolveInputRef()` in runtime** — runtime automatically resolves `input_ref` before calling `agent.run()`. Agent code only sees the resolved `ctx.input` and never needs to know the source
+- **Dataset input support** — when `input_ref.type === "dataset"`, the runtime atomically claims the next pending item from the platform (`GET /cli/.../agents/dataset/:id/next-item`) and sets it as `ctx.input`
+- **1 tick = 1 item** — each scheduler tick or manual trigger processes exactly one dataset item. If no pending items remain, the run is skipped silently
+
+### Changed
+
+- **`ctx.input` for dataset type** — no longer pre-fetched at agent startup. Items are claimed per-run to prevent holding a `processing` lock without a worker
+- **`config_updated` handling** — non-dataset `input_ref` types are re-resolved when config changes. Dataset type is intentionally skipped (items are always claimed fresh at run time)
+- **Trigger handler** — unified: any `input_ref` type is resolved per trigger, replacing the previous separate code paths
+
+### Design
+
+The `input_ref` resolution follows the same pattern as `ctx.ai.image` — the runtime handles the source transparently, and agent code only interacts with the resolved value:
+
+```ts
+export default defineAgent({
+  async run(ctx) {
+    // ctx.input is already resolved — agent doesn't know it came from a dataset
+    const item = ctx.input as { id: number; data_path: string; status: string }
+    if (!item) return  // no pending items
+
+    ctx.log.info("Processing item:", item.id)
+    // ... process item ...
+    // mark item completed/error via platform API
+  }
+})
+```
+
+---
+
+
 
 ### Changed
 

@@ -70,7 +70,7 @@ The `ctx` object is injected by the runtime (via `lifectl`) and provides everyth
 
 ```ts
 type Context = {
-  input: unknown
+  input: unknown        // resolved by runtime — see Input section below
 
   config: {
     agent: string
@@ -82,11 +82,8 @@ type Context = {
   env: Record<string, unknown>
 
   ai: {
-    chat: (req: {
-      messages: Array<{ role: "system" | "user" | "assistant"; content: string }>
-      model?: string
-      temperature?: number
-    }) => Promise<string>
+    chat: (req: { ... }) => Promise<string>
+    image: (req: { ... }) => Promise<string>
   }
 
   storage: {
@@ -106,12 +103,75 @@ type Context = {
   }
 
   meta: {
-    job_id?: string
     run_id: string
     timestamp: number
   }
 }
 ```
+
+---
+
+## 📥 Input (`ctx.input`)
+
+`ctx.input` is resolved by the runtime before `agent.run()` is called. Agent code only sees the final value — it never needs to know where the input came from.
+
+### Input Sources
+
+Input sources are configured via the platform Web UI (agent instance detail page). The platform stores an `input_ref` in the instance config, and the runtime resolves it automatically.
+
+```ts
+// Agent code — source-agnostic
+export default defineAgent({
+  async run(ctx) {
+    const item = ctx.input  // already resolved, ready to use
+    if (!item) return       // null = no input available (e.g. no pending dataset items)
+
+    ctx.log.info("Got input:", item)
+  }
+})
+```
+
+### Dataset Input
+
+When input source is set to a **Dataset**, the runtime atomically claims the next `pending` item on each run:
+
+- **1 trigger / 1 scheduler tick = 1 item** — no bulk processing
+- **Atomic claim** — uses `UPDATE...RETURNING` to prevent race conditions when multiple agents share the same dataset
+- **Status lifecycle**: `pending` → `processing` → `completed` / `error`
+- If no pending items remain, `ctx.input` is `null` and the run is skipped
+
+```ts
+export default defineAgent({
+  async run(ctx) {
+    const item = ctx.input as {
+      id: number
+      data_path: string   // R2 path: ai/dataset/{userId}/{datasetId}/{itemId}
+      status: string      // "processing" when agent receives it
+      created_at: string
+    } | null
+
+    if (!item) {
+      ctx.log.info("No pending items")
+      return
+    }
+
+    ctx.log.info("Processing item:", item.id, item.data_path)
+    // ... process item ...
+    // mark item completed/error via platform API when done
+  }
+})
+```
+
+### `InputRef` Type
+
+```ts
+export type InputRef =
+    | { type: "dataset"; value: string }   // dataset id
+    // future: | { type: "api"; url: string }
+    // future: | { type: "file"; path: string }
+```
+
+This type is exported for platform integrations. Agent code never needs to use it directly.
 
 ---
 
@@ -430,7 +490,16 @@ Users can override any env value through the Web UI, which updates the running i
 
 ## 📋 Changelog
 
-### v0.0.12 (Latest)
+### v0.0.17 (Latest)
+
+**📥 Dataset Input & `InputRef` Resolution**
+- **NEW:** `InputRef` type — extensible reference to external input sources (`dataset`, and more in future)
+- **NEW:** Runtime automatically resolves `input_ref` → `ctx.input` before each `agent.run()` call
+- **NEW:** Dataset input support — atomically claims 1 pending item per run (`UPDATE...RETURNING`)
+- **BEHAVIOR:** 1 scheduler tick / 1 trigger = 1 dataset item. Skips silently if no pending items
+- **DESIGN:** Agent code is source-agnostic — only sees `ctx.input`, never the `input_ref`
+
+### v0.0.12
 
 **📋 Environment Variable Schema Update**
 - **CHANGED:** `agent.json` env field now uses array of objects format with full schema definition
@@ -644,10 +713,11 @@ export default defineAgent({
 This SDK is designed to support:
 
 * Multi-provider AI (OpenAI, Claude, local LLM) ✅ **Implemented**
+* Dataset input with atomic job queue ✅ **Implemented**
 * Workflow chaining
 * Human-in-the-loop systems
 * Browser automation (Playwright)
-* External data sources
+* External data sources (API, file, queue)
 
 ---
 
