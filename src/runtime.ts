@@ -1003,17 +1003,19 @@ async function resolveInputRef(
         console.warn(`[runtime] resolveInputRef: dataset fetch failed (${res.status}) — ${body}`)
         return null
       }
-      const data = await res.json() as { success: boolean; item?: unknown }
+      const data = await res.json() as { success: boolean; item?: { content?: unknown; id?: number; data_path?: string; status?: string } | null }
       if (!data.success) {
         console.warn("[runtime] resolveInputRef: dataset fetch returned success=false")
         return null
       }
-      if (data.item) {
-        console.log(`[runtime] resolveInputRef: claimed next item from dataset ${inputRef.value}`)
-      } else {
+      if (!data.item) {
         console.log(`[runtime] resolveInputRef: no pending items in dataset ${inputRef.value}`)
+        return null
       }
-      return data.item ?? null
+      console.log(`[runtime] resolveInputRef: claimed next item from dataset ${inputRef.value}`)
+      // return the R2 content as ctx.input — agent receives parsed JSON directly
+      // item.content is null if R2 fetch failed (agent should handle null input)
+      return data.item.content ?? null
     } catch (e) {
       console.error("[runtime] resolveInputRef: failed to fetch dataset item:", e)
       return null
