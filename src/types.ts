@@ -109,6 +109,20 @@ export interface AgentConfig {
 }
 
 /**
+ * Reference to an external input source, resolved by the runtime before agent.run().
+ * Agent code never sees this — it only receives the resolved value via ctx.input.
+ *
+ * Designed to be extensible: future input sources (api, file, queue, etc.)
+ * can be added here without changing agent code.
+ *
+ * Stored inside config.input.input_ref in the platform database.
+ */
+export type InputRef =
+    | { type: "dataset"; value: string }   // dataset id — resolved to array of dataset items
+    // future: | { type: "api"; url: string }
+    // future: | { type: "file"; path: string }
+
+/**
  * The full context object injected into every agent run.
  */
 export interface Context<TInput = unknown> {

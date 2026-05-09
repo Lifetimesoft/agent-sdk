@@ -18,6 +18,7 @@ export type {
   Agent,
   AgentDefinition,
   AgentConfig,
+  InputRef,
   SchedulerConfig,
   ChatMessage,
   Context,

@@ -109,6 +109,15 @@ async function main(): Promise<void> {
     },
   }
 
+  // resolve input_ref → ctx.input before starting the agent
+  // dataset type: skip pre-fetch — items are claimed per-run to avoid holding a lock
+  // other types: resolve once at startup
+  const initialInputRef = extractInputRef(ctxBase.config)
+  if (initialInputRef && initialInputRef.type !== "dataset") {
+    console.log(`[runtime] Resolving input_ref: type=${initialInputRef.type} value=${initialInputRef.value}`)
+    ctx.input = await resolveInputRef(initialInputRef, runtimeCfg)
+  }
+
   // load agent module from cwd
   const agentEntry = path.resolve(process.cwd(), entrypoint)
   let agentModule: unknown
@@ -150,12 +159,26 @@ async function main(): Promise<void> {
     schedulerAbort.abort()
     schedulerAbort = new AbortController()
     const combinedSignal = anySignal([abortController.signal, schedulerAbort.signal])
+
+    const inputRef = extractInputRef(ctx.config)
+    const isDatasetInput = inputRef?.type === "dataset"
+
+    const runJob = async (jobId: string): Promise<void> => {
+      if (isDatasetInput) {
+        // fetch exactly 1 item per tick — atomic claim, skip if no pending items
+        ctx.input = await resolveInputRef(inputRef, runtimeCfg)
+        if (ctx.input === null) {
+          console.log(`[${fmtDate()}] [job:${jobId}] [agent:info] [scheduler] no pending items — skipping`)
+          return
+        }
+      }
+      ctx.log = makeLogger(jobId)
+      await agentRun(ctx)
+    }
+
     runWithScheduler(
       cfg,
-      (jobId: string) => {
-        ctx.log = makeLogger(jobId)
-        return agentRun(ctx).then(() => undefined)
-      },
+      (jobId: string) => runJob(jobId),
       combinedSignal,
       makeLogger(""),
     ).catch((e: unknown) => {
@@ -172,8 +195,22 @@ async function main(): Promise<void> {
       if (msg.type === "trigger" && schedulerConfig.type === "none") {
         const jobId = Math.floor(Math.random() * 0xffffff).toString(16).padStart(6, "0")
         console.log(`[${fmtDate()}] [job:${jobId}] [agent:info] [scheduler] start job ${jobId}`)
-        ctx.log = makeLogger(jobId)
-        agentRun(ctx).then(() => {
+        const triggerInputRef = extractInputRef(ctx.config)
+
+        const runTrigger = async () => {
+          if (triggerInputRef) {
+            // fetch exactly 1 item per trigger — skip if no pending items
+            ctx.input = await resolveInputRef(triggerInputRef, runtimeCfg)
+            if (ctx.input === null) {
+              console.log(`[${fmtDate()}] [job:${jobId}] [agent:info] [scheduler] no pending items — skipping`)
+              return
+            }
+          }
+          ctx.log = makeLogger(jobId)
+          await agentRun(ctx)
+        }
+
+        runTrigger().then(() => {
           console.log(`[${fmtDate()}] [job:${jobId}] [agent:info] [scheduler] end job ${jobId}`)
           console.log(`[${fmtDate()}] [job:${jobId}] [agent:info] ----------`)
         }).catch((e: unknown) => {
@@ -188,6 +225,16 @@ async function main(): Promise<void> {
         if ((msg.config as { env?: Record<string, unknown> })?.env) {
           ctx.env = (msg.config as { env: Record<string, unknown> }).env
           console.log("[runtime] env updated")
+        }
+        // re-resolve input_ref — only for non-dataset types (dataset items are fetched per-run)
+        const updatedInputRef = extractInputRef(msg.config)
+        if (updatedInputRef && updatedInputRef.type !== "dataset") {
+          console.log(`[runtime] Re-resolving input_ref after config_updated: type=${updatedInputRef.type} value=${updatedInputRef.value}`)
+          void resolveInputRef(updatedInputRef, runtimeCfg).then(resolved => {
+            ctx.input = resolved
+          })
+        } else {
+          ctx.input = null
         }
         // extract scheduler config for scheduler loop
         schedulerConfig = (msg.config as { scheduler?: SchedulerConfig })?.scheduler ?? { type: "none" }
@@ -920,7 +967,70 @@ async function callOpenAIDirect(
   return data.choices[0].message.content
 }
 
-// ─── HTTP helper ──────────────────────────────────────────────────────────────
+// ─── Input Ref Resolver ───────────────────────────────────────────────────────
+
+/**
+ * Resolve an input_ref to a concrete value before passing to agent.run().
+ * Agent code never sees input_ref — it only receives the resolved ctx.input.
+ *
+ * Mirrors the pattern of ctx.ai.image: the runtime handles the source,
+ * the agent just uses the result.
+ */
+async function resolveInputRef(
+  inputRef: { type: string; value: string } | null | undefined,
+  cfg: RuntimeConfig | undefined,
+): Promise<unknown> {
+  if (!inputRef) return null
+
+  if (inputRef.type === "dataset") {
+    // derive base URL from stopped_url: .../agents/stopped → .../agents
+    const base = cfg?.stopped_url
+      ? cfg.stopped_url.replace(/\/stopped$/, "")
+      : "https://app.lifetimesoft.com/cli/ai-account-management/agents"
+
+    const token = await getValidToken()
+    try {
+      // atomic claim: marks item as 'processing', returns null when no pending items left
+      const res = await fetch(`${base}/dataset/${inputRef.value}/next-item`, {
+        headers: {
+          "Content-Type": "application/json",
+          ...(token ? { Authorization: token } : {}),
+        },
+      })
+      if (!res.ok) {
+        console.warn(`[runtime] resolveInputRef: dataset fetch failed (${res.status})`)
+        return null
+      }
+      const data = await res.json() as { success: boolean; item?: unknown }
+      if (!data.success) {
+        console.warn("[runtime] resolveInputRef: dataset fetch returned success=false")
+        return null
+      }
+      if (data.item) {
+        console.log(`[runtime] resolveInputRef: claimed next item from dataset ${inputRef.value}`)
+      } else {
+        console.log(`[runtime] resolveInputRef: no pending items in dataset ${inputRef.value}`)
+      }
+      return data.item ?? null
+    } catch (e) {
+      console.error("[runtime] resolveInputRef: failed to fetch dataset item:", e)
+      return null
+    }
+  }
+
+  console.warn(`[runtime] resolveInputRef: unknown input_ref type "${inputRef.type}"`)
+  return null
+}
+
+/**
+ * Extract input_ref from config.input (stored as config.input.input_ref by the platform).
+ */
+function extractInputRef(config: unknown): { type: string; value: string } | null {
+  const inputField = (config as { input?: { input_ref?: { type: string; value: string } } })?.input
+  return inputField?.input_ref ?? null
+}
+
+
 
 /**
  * POST to SaaS API with automatic token refresh on 401/406.
