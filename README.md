@@ -206,6 +206,41 @@ export default defineAgent({
 
 The provider is auto-detected from the model name (models starting with `gpt-` use OpenAI, others use Gemini).
 
+### `ctx.ai.image()` — Image Generation
+
+Generate an image from a text prompt. Returns a public URL.
+
+```ts
+const imageUrl = await ctx.ai.image({
+    prompt: "A serene mountain landscape at sunset",
+    size: "1024x1792",   // 9:16 portrait
+    image_url: referenceUrl,  // optional reference image for img2img
+})
+```
+
+### `ctx.ai.video()` — Timelapse Video Generation
+
+Generate a timelapse video from a **before/after image pair**. Returns a public URL.
+Uses the same async callback pattern as `image()` — the runtime fires the request and waits for a `video_ready` WebSocket notification (timeout: 5 minutes).
+
+```ts
+const videoUrl = await ctx.ai.video({
+    before_url: "https://...",   // "before" state image
+    after_url:  "https://...",   // "after" state image
+    prompt: "Fixed camera angle timelapse, workers constructing and decorating from image 1 to image 2",  // optional
+    aspect_ratio: "9:16",        // optional, default "9:16"
+    duration: 5,                 // optional, seconds, default 5
+})
+```
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `before_url` | string | required | URL of the "before" image |
+| `after_url` | string | required | URL of the "after" image |
+| `prompt` | string | — | Scene/style guidance for the video |
+| `aspect_ratio` | string | `"9:16"` | `"9:16"` \| `"16:9"` \| `"1:1"` |
+| `duration` | number | `5` | Duration in seconds |
+
 ### Agent-side AI
 
 Use your own API keys for full control over AI costs and model selection.
@@ -490,7 +525,16 @@ Users can override any env value through the Web UI, which updates the running i
 
 ## 📋 Changelog
 
-### v0.0.17 (Latest)
+### v0.0.18 (Latest)
+
+**🎬 Video Generation (`ctx.ai.video()`)**
+- **NEW:** `ctx.ai.video()` — generate timelapse videos from a before/after image pair
+- **NEW:** `prompt` parameter for scene/style guidance (e.g. construction workers, furniture staging)
+- **PATTERN:** Same async callback pattern as `ctx.ai.image()` — fire-and-forget to n8n, resolved via `video_ready` WebSocket message
+- **TIMEOUT:** 5 minutes (vs 2 minutes for image)
+- **MOCK:** `createMockContext()` now includes a default `video` stub
+
+### v0.0.17
 
 **📥 Dataset Input & `InputRef` Resolution**
 - **NEW:** `InputRef` type — extensible reference to external input sources (`dataset`, and more in future)
@@ -714,6 +758,7 @@ This SDK is designed to support:
 
 * Multi-provider AI (OpenAI, Claude, local LLM) ✅ **Implemented**
 * Dataset input with atomic job queue ✅ **Implemented**
+* Timelapse video generation (`ctx.ai.video()`) ✅ **Implemented**
 * Workflow chaining
 * Human-in-the-loop systems
 * Browser automation (Playwright)

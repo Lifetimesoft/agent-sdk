@@ -97,10 +97,18 @@ async function main(): Promise<void> {
     timer: ReturnType<typeof setTimeout>
   }>()
 
+  // pending video generation promises — keyed by job_id
+  // resolved when DO sends video_ready message via WebSocket
+  const pendingVideoJobs = new Map<string, {
+    resolve: (url: string) => void
+    reject: (err: Error) => void
+    timer: ReturnType<typeof setTimeout>
+  }>()
+
   const ctx: Context = {
     ...ctxBase,
     log: makeLogger(""),
-    ai: buildAiProvider(runtimeCfg, ctxBase.env, runId, pendingImageJobs),
+    ai: buildAiProvider(runtimeCfg, ctxBase.env, runId, pendingImageJobs, pendingVideoJobs),
     storage: buildStorageProvider(runId, runtimeCfg),
     queue: {
       push: async () => {
@@ -249,6 +257,18 @@ async function main(): Promise<void> {
             pending.resolve(msg.image_url)
           } else {
             pending.reject(new Error(`[runtime] Image generation failed: ${msg.message || "unknown error"}`))
+          }
+        }
+      } else if (msg.type === "video_ready" && msg.job_id) {
+        // video generation complete — resolve the pending promise for this job
+        const pending = pendingVideoJobs.get(msg.job_id)
+        if (pending) {
+          clearTimeout(pending.timer)
+          pendingVideoJobs.delete(msg.job_id)
+          if (msg.success && msg.image_url) {
+            pending.resolve(msg.image_url)
+          } else {
+            pending.reject(new Error(`[runtime] Video generation failed: ${msg.message || "unknown error"}`))
           }
         }
       }
@@ -505,6 +525,11 @@ function buildAiProvider(
     resolve: (url: string) => void
     reject: (err: Error) => void
     timer: ReturnType<typeof setTimeout>
+  }>,
+  pendingVideoJobs: Map<string, {
+    resolve: (url: string) => void
+    reject: (err: Error) => void
+    timer: ReturnType<typeof setTimeout>
   }>
 ) {
   return {
@@ -540,6 +565,16 @@ function buildAiProvider(
         return callAgentSideImage(req, geminiApiKey, openaiApiKey, agentProvider)
       }
       return callPlatformSideImage(req, cfg, runId, pendingImageJobs)
+    },
+
+    video: async (req: {
+      before_url: string
+      after_url: string
+      prompt?: string
+      aspect_ratio?: string
+      duration?: number
+    }): Promise<string> => {
+      return callPlatformSideVideo(req, cfg, runId, pendingVideoJobs)
     },
   }
 }
@@ -750,9 +785,94 @@ async function callPlatformSideImage(
 }
 
 /**
- * Agent-side Image: Agent calls image provider directly using its own API key.
- * Returns a public URL (OpenAI) or base64 data URL (Gemini).
+ * Platform-side Video: Agent calls platform video API endpoint.
+ * Sends run_id so the platform can notify the agent via DO WebSocket when done.
+ * Waits for the video_ready WebSocket message before resolving.
  */
+async function callPlatformSideVideo(
+  req: {
+    before_url: string
+    after_url: string
+    prompt?: string
+    aspect_ratio?: string
+    duration?: number
+  },
+  cfg: RuntimeConfig | undefined,
+  runId: string,
+  pendingVideoJobs: Map<string, {
+    resolve: (url: string) => void
+    reject: (err: Error) => void
+    timer: ReturnType<typeof setTimeout>
+  }>
+): Promise<string> {
+  const videoUrl = cfg?.ai_url
+    ? cfg.ai_url.replace(/\/chat$/, "/video")
+    : "https://app.lifetimesoft.com/cli/ai-account-management/ai/video"
+
+  const accessToken = await getValidToken()
+  if (!accessToken) {
+    throw new Error("[runtime] Platform-side video requires authentication (missing access token)")
+  }
+
+  const doRequest = async (token: string): Promise<{ success: boolean; job_id?: string; url?: string; message?: string; code?: number }> => {
+    const res = await fetch(videoUrl, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: token,
+      },
+      body: JSON.stringify({
+        before_url: req.before_url,
+        after_url: req.after_url,
+        prompt: req.prompt ?? null,
+        aspect_ratio: req.aspect_ratio ?? "9:16",
+        duration: req.duration ?? 5,
+        run_id: runId,
+      }),
+    })
+    if (!res.ok) {
+      const errorText = await res.text().catch(() => "unknown error")
+      throw new Error(`[runtime] Platform-side video failed (${res.status}): ${errorText}`)
+    }
+    return res.json() as Promise<{ success: boolean; job_id?: string; url?: string; message?: string; code?: number }>
+  }
+
+  let data = await doRequest(accessToken)
+
+  if (data.code === 401 || data.code === 406) {
+    const refreshed = await refreshTokenIfNeeded(accessToken)
+    if (refreshed && refreshed !== accessToken) {
+      data = await doRequest(refreshed)
+      if (!data.success || !data.job_id) {
+        throw new Error(`[runtime] Platform-side video failed after token refresh: ${data.message || "no job_id"}`)
+      }
+    } else {
+      throw new Error(`[runtime] Platform-side video unauthorized (code: ${data.code}) — please re-login`)
+    }
+  }
+
+  if (!data.success || !data.job_id) {
+    throw new Error(`[runtime] Platform-side video failed: ${data.message || "no job_id"}`)
+  }
+
+  const jobId = data.job_id
+  const VIDEO_READY_TIMEOUT_MS = 300_000 // 5 minutes — video takes longer than image
+
+  console.log(`[runtime] Video job ${jobId} submitted — waiting for video_ready notification...`)
+
+  return new Promise<string>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      pendingVideoJobs.delete(jobId)
+      reject(new Error(`[runtime] Video generation timed out after ${VIDEO_READY_TIMEOUT_MS / 1000}s (job: ${jobId})`))
+    }, VIDEO_READY_TIMEOUT_MS)
+
+    if (typeof timer.unref === "function") timer.unref()
+
+    pendingVideoJobs.set(jobId, { resolve, reject, timer })
+  })
+}
+
+
 async function callAgentSideImage(
   req: {
     prompt: string

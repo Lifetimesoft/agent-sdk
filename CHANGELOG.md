@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.0.18] - 2026-05-11
+
+### Added
+
+- **`ctx.ai.video()`** — new method on `AiProvider` for generating timelapse videos from a before/after image pair
+  ```ts
+  const videoUrl = await ctx.ai.video({
+      before_url: "https://...",   // "before" image URL
+      after_url:  "https://...",   // "after" image URL
+      prompt?: string,             // optional scene/style guidance
+      aspect_ratio?: string,       // "9:16" | "16:9" | "1:1" (default: "9:16")
+      duration?: number,           // seconds (default: 5)
+  })
+  ```
+- **`video_ready` WebSocket message handling** — runtime resolves the pending `ctx.ai.video()` promise when DO sends `video_ready` via WebSocket (same pattern as `image_ready`)
+- **`callPlatformSideVideo()`** — internal runtime function, mirrors `callPlatformSideImage()`. Fires request to platform video endpoint, waits up to 5 minutes for `video_ready` notification
+- **`pendingVideoJobs` map** — tracks in-flight video generation promises, keyed by `job_id`
+- **`video()` default in `createMockContext()`** — mock context now includes a default `video` implementation that throws a descriptive error, consistent with `chat` and `image`
+
+### Changed
+
+- **`AiProvider` interface** — added `video()` method (non-breaking: existing agents unaffected)
+- **`buildAiProvider()`** — accepts `pendingVideoJobs` map as additional parameter
+
+---
+
 ## [0.0.17] - 2026-05-09
 
 ### Added
