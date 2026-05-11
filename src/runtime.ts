@@ -1100,7 +1100,10 @@ async function resolveInputRef(
   inputRef: { type: string; value: string } | null | undefined,
   cfg: RuntimeConfig | undefined,
 ): Promise<unknown> {
-  if (!inputRef) return null
+  if (!inputRef) {
+    console.log("[runtime] resolveInputRef: no input_ref configured — ctx.input will be null")
+    return null
+  }
 
   if (inputRef.type === "dataset") {
     // derive base URL from stopped_url: .../agents/stopped → .../agents
@@ -1135,7 +1138,11 @@ async function resolveInputRef(
       console.log(`[runtime] resolveInputRef: claimed next item from dataset ${inputRef.value}`)
       // return the R2 content as ctx.input — agent receives parsed JSON directly
       // item.content is null if R2 fetch failed (agent should handle null input)
-      return data.item.content ?? null
+      if (data.item.content === null || data.item.content === undefined) {
+        console.warn(`[runtime] resolveInputRef: item claimed (id=${data.item.id}) but R2 content is null — data_path=${data.item.data_path}`)
+        return null
+      }
+      return data.item.content
     } catch (e) {
       console.error("[runtime] resolveInputRef: failed to fetch dataset item:", e)
       return null
