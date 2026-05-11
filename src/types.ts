@@ -32,6 +32,19 @@ export interface AiProvider {
         n?: number          // number of images (default: 1)
         image_url?: string  // reference image URL — passed to n8n for img2img style generation
     }): Promise<string>     // returns public image URL
+
+    /**
+     * Generate a timelapse video from a before/after image pair.
+     * Returns a public URL of the generated video.
+     * Uses the same async callback pattern as image generation.
+     */
+    video(req: {
+        before_url: string     // URL of the "before" image
+        after_url: string      // URL of the "after" image
+        prompt?: string        // optional guidance for style, transition, or scene description
+        aspect_ratio?: string  // e.g. "9:16" (portrait), "16:9" (landscape), "1:1" (default: "9:16")
+        duration?: number      // seconds (default: 5)
+    }): Promise<string>     // returns public video URL
 }
 
 /**
