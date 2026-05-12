@@ -5,6 +5,7 @@ export default defineConfig({
     index: "src/index.ts",
     testing: "src/testing.ts",
     runtime: "src/runtime.ts",
+    "runtime-chrome": "src/runtime-chrome.ts",
   },
   format: ["cjs", "esm"],
   dts: true,

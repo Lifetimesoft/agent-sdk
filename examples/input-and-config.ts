@@ -5,40 +5,36 @@
  * The agent reads a tone from config and applies it to the user's input.
  *
  * Expected input:  { text: string }
- * Expected config: { tone: string }
+ * Expected config: { tone?: string }
  */
-import { defineAgent } from "../src"
+import { defineAgent, getEnvString } from "../src"
 
 interface Input {
   text: string
 }
 
-interface Config {
-  agent: string
-  version: string
-  tone: string
-}
-
-export default defineAgent<Input>({
+export default defineAgent<Input, { text: string }>({
   async run(ctx) {
     const { input } = ctx
-    const config = ctx.config as Config
 
     if (!input?.text) {
       ctx.log.error("Missing input.text")
-      return { error: "input.text is required" }
+      return { text: "Error: input.text is required" }
     }
 
-    const tone = config.tone ?? "neutral"
+    // config fields beyond agent/version are typed as unknown — cast as needed
+    const tone = (ctx.config.tone as string | undefined) ?? "neutral"
+    const model = getEnvString(ctx.env, "ai_model", "gemini-2.0-flash")
 
     const reply = await ctx.ai.chat({
       messages: [
         { role: "system", content: `You reply in a ${tone} tone.` },
         { role: "user", content: input.text },
       ],
+      model,
     })
 
-    ctx.log.info("Replied with tone:", config.tone)
+    ctx.log.info(`Replied with tone="${tone}" model="${model}"`)
 
     return { text: reply }
   },
