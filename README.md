@@ -14,6 +14,7 @@ It provides:
 * Typed `ctx` (context) object
 * Abstraction for AI, storage, logging, and more
 * Compatibility with `lifectl` CLI runtime
+* **Chrome Extension runtime** for running agents inside browser extensions (MV3)
 
 ---
 
@@ -525,7 +526,18 @@ Users can override any env value through the Web UI, which updates the running i
 
 ## 📋 Changelog
 
-### v0.0.18 (Latest)
+### v0.0.21 (Latest)
+
+**🌐 Chrome Extension Runtime (`runtime-chrome`)**
+- **NEW:** `createChromeRuntime()` — run agents inside Chrome Extension MV3 service workers
+- **NEW:** `@lifetimesoft/agent-sdk/runtime-chrome` export path
+- **STORAGE:** `ctx.storage` backed by `chrome.storage.local` (or `.sync`) with TTL support
+- **QUEUE:** `ctx.queue.push()` dispatches via `chrome.runtime.sendMessage`
+- **SCHEDULER:** `chrome.alarms` for interval/cron (min 1 min), WebSocket + `onMessage` for `none`
+- **TOKENS:** Access/refresh tokens persisted to `chrome.storage` across service worker restarts
+- **SHUTDOWN:** `chrome.runtime.onSuspend` for graceful shutdown
+
+### v0.0.18
 
 **🎬 Video Generation (`ctx.ai.video()`)**
 - **NEW:** `ctx.ai.video()` — generate timelapse videos from a before/after image pair
@@ -759,10 +771,105 @@ This SDK is designed to support:
 * Multi-provider AI (OpenAI, Claude, local LLM) ✅ **Implemented**
 * Dataset input with atomic job queue ✅ **Implemented**
 * Timelapse video generation (`ctx.ai.video()`) ✅ **Implemented**
+* Chrome Extension runtime (`runtime-chrome`) ✅ **Implemented**
 * Workflow chaining
 * Human-in-the-loop systems
 * Browser automation (Playwright)
 * External data sources (API, file, queue)
+
+---
+
+## 🌐 Chrome Extension Runtime
+
+Run agents inside a **Chrome Extension** (Manifest V3 service worker) using the dedicated Chrome runtime.
+
+### Installation
+
+```bash
+npm install @lifetimesoft/agent-sdk @types/chrome
+```
+
+### Usage
+
+```ts
+// background.ts (MV3 service worker)
+import { createChromeRuntime } from "@lifetimesoft/agent-sdk/runtime-chrome"
+import myAgent from "./my-agent"
+
+const runtime = createChromeRuntime(myAgent, {
+  agentCtx: {
+    input: {},
+    config: { agent: "my-agent", version: "1.0.0" },
+    env: { gemini_api_key: "AIzaSy..." },
+    meta: { run_id: "ext-001", timestamp: Date.now() },
+  },
+  accessToken: "...",   // optional — for platform-side AI and storage
+})
+
+await runtime.start()
+```
+
+To trigger the agent from a popup or content script:
+
+```ts
+// popup.ts or content-script.ts
+await chrome.runtime.sendMessage({ type: "agent_trigger" })
+```
+
+### How It Differs from the Node.js Runtime
+
+The Chrome runtime uses the same `Context` interface and `defineAgent()` API — agents are fully portable between runtimes without code changes.
+
+| Feature | Node.js Runtime | Chrome Extension Runtime |
+|---|---|---|
+| `ctx.ai.chat/image` | `fetch()` via Node | `fetch()` native browser ✅ |
+| `ctx.ai.video` | WebSocket callback | WebSocket callback ✅ |
+| `ctx.storage` | Platform API | `chrome.storage.local` ✅ |
+| `ctx.queue` | Platform queue API | `chrome.runtime.sendMessage` ✅ |
+| `ctx.log` | `console.*` | `console.*` ✅ |
+| WebSocket heartbeat | `ws` package | Native browser `WebSocket` ✅ |
+| Token refresh | `fetch()` + `process.env` | `fetch()` + `chrome.storage` ✅ |
+| Scheduler `none` | WebSocket trigger | WebSocket + `chrome.runtime.onMessage` ✅ |
+| Scheduler `interval/cron` | `setInterval` / cron loop | `chrome.alarms` ⚠️ min 1 min |
+| `process.env` | ✅ | ❌ — pass via `agentCtx.env` |
+| `fs` / `require()` dynamic | ✅ | ❌ — import agent directly |
+| Shutdown signal | `SIGTERM` / `SIGINT` | `chrome.runtime.onSuspend` |
+
+> **Scheduler note:** Chrome's `chrome.alarms` API enforces a minimum period of **1 minute** for MV3 service workers. For sub-minute scheduling, use the Node.js runtime instead.
+
+### Options
+
+```ts
+createChromeRuntime(agent, {
+  agentCtx,           // required — equivalent of AGENT_CTX env var
+  accessToken,        // optional — for platform-side AI and storage
+  refreshToken,       // optional — auto-refreshed and persisted to chrome.storage
+  storageArea,        // "local" (default) | "sync"
+  alarmPrefix,        // default: "lifetimesoft_agent" — change if running multiple agents
+})
+```
+
+### Storage
+
+`ctx.storage` is backed by `chrome.storage.local` (or `.sync` if configured). Keys are namespaced with `lifetimesoft_storage_` prefix. TTL is supported via stored expiry metadata.
+
+### Queue
+
+`ctx.queue.push(data)` dispatches a `chrome.runtime.sendMessage` with format:
+
+```ts
+{ type: "agent_queue_message", data: T }
+```
+
+Listen for it anywhere in your extension:
+
+```ts
+chrome.runtime.onMessage.addListener((message) => {
+  if (message.type === "agent_queue_message") {
+    console.log("Queue message:", message.data)
+  }
+})
+```
 
 ---
 

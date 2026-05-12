@@ -7,6 +7,64 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.0.21] - 2026-05-13
+
+### Added
+
+- **`src/runtime-chrome.ts`** — new Chrome Extension runtime for running agents inside MV3 service workers
+- **`createChromeRuntime(agent, options)`** — factory function that returns a `{ start(), stop() }` handle
+  ```ts
+  import { createChromeRuntime } from "@lifetimesoft/agent-sdk/runtime-chrome"
+  import myAgent from "./my-agent"
+
+  const runtime = createChromeRuntime(myAgent, {
+    agentCtx: { input: {}, config: { agent: "my-agent", version: "1.0.0" }, env: {}, meta: { run_id: "ext-001", timestamp: Date.now() } },
+    accessToken: "...",
+  })
+  await runtime.start()
+  ```
+- **`@lifetimesoft/agent-sdk/runtime-chrome`** — new package export path (CJS + ESM + `.d.ts`)
+- **`ChromeRuntimeOptions`** — exported interface for `createChromeRuntime()` options (`agentCtx`, `accessToken`, `refreshToken`, `storageArea`, `alarmPrefix`)
+- **`ChromeRuntimeHandle`** — exported interface with `start()` and `stop()` methods
+- **`chrome.storage` provider** — `ctx.storage` backed by `chrome.storage.local` (or `.sync`) with TTL support via stored expiry metadata. Keys namespaced as `lifetimesoft_storage_{key}`
+- **`chrome.runtime.sendMessage` queue** — `ctx.queue.push(data)` dispatches `{ type: "agent_queue_message", data }` to other extension contexts
+- **`chrome.alarms` scheduler** — interval and cron scheduler modes use `chrome.alarms` (MV3-safe, survives service worker termination). Minimum period: 1 minute per Chrome policy
+- **`chrome.runtime.onMessage` trigger** — scheduler `none` mode listens for `{ type: "agent_trigger" }` messages in addition to WebSocket triggers
+- **`chrome.runtime.onSuspend` shutdown** — graceful shutdown hook for MV3 service worker suspension, calls `notifyStopped` best-effort
+- **Token persistence** — access/refresh tokens persisted to `chrome.storage.local` under `lifetimesoft_access_token` / `lifetimesoft_refresh_token`, surviving service worker restarts
+- **Native browser WebSocket** — heartbeat uses the browser's built-in `WebSocket` (no `ws` package dependency in Chrome builds)
+- **`examples/chrome-extension/`** — new example: Page Summariser extension
+  - `my-agent.ts` — portable agent that summarises page text (works with both `lifectl` and Chrome runtime)
+  - `background.ts` — MV3 service worker bootstrapping `createChromeRuntime()`
+  - `popup.ts` — popup UI that extracts page text, sets agent input, and triggers a run
+  - `popup.html` — popup HTML
+  - `manifest.json` — MV3 manifest with required permissions
+  - `README.md` — setup and usage guide
+
+### Changed
+
+- **`tsup.config.ts`** — added `"runtime-chrome": "src/runtime-chrome.ts"` entry point
+- **`package.json` exports** — added `"./runtime-chrome"` export path
+- **`package.json` devDependencies** — added `@types/chrome@^0.1.42`
+- **`examples/hello-world.ts`** — added explicit generic types and `model: "gemini-2.0-flash"`
+- **`examples/input-and-config.ts`** — uses `getEnvString` for model selection, explicit return type, removed redundant `Config` interface cast
+- **`examples/storage-counter.ts`** — added explicit generic return type
+
+### Feature Compatibility (Chrome vs Node.js)
+
+| Feature | Node.js Runtime | Chrome Runtime |
+|---|---|---|
+| `ctx.ai.chat/image/video` | `fetch()` via Node | `fetch()` native ✅ |
+| `ctx.storage` | Platform API | `chrome.storage.local` ✅ |
+| `ctx.queue` | Platform queue | `chrome.runtime.sendMessage` ✅ |
+| WebSocket heartbeat | `ws` package | Native `WebSocket` ✅ |
+| Scheduler `none` | WS trigger | WS + `onMessage` ✅ |
+| Scheduler `interval/cron` | `setInterval` / cron loop | `chrome.alarms` ⚠️ min 1 min |
+| Token refresh | `process.env` + file | `chrome.storage` ✅ |
+| `process.env` / `fs` | ✅ | ❌ — not available in browser |
+
+---
+
 ## [0.0.18] - 2026-05-11
 
 ### Added
@@ -75,9 +133,9 @@ export default defineAgent({
 
 
 
-### Changed
+## [0.0.12] - 2026-05-01
 
-- **Environment variable schema** — `agent.json` env field now uses array of objects format with full schema definition
+### Changed
 - **Documentation** — updated all examples and documentation to reflect correct env schema format
 
 ### Environment Variable Schema

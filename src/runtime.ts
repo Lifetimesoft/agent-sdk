@@ -204,15 +204,20 @@ async function main(): Promise<void> {
         const jobId = Math.floor(Math.random() * 0xffffff).toString(16).padStart(6, "0")
         console.log(`[${fmtDate()}] [job:${jobId}] [agent:info] [scheduler] start job ${jobId}`)
         const triggerInputRef = extractInputRef(ctx.config)
+        console.log(`[runtime] trigger: input_ref=${JSON.stringify(triggerInputRef)}, config.input=${JSON.stringify((ctx.config as any)?.input)}`)
 
         const runTrigger = async () => {
           if (triggerInputRef) {
+            console.log(`[runtime] trigger: resolving input_ref type=${triggerInputRef.type} value=${triggerInputRef.value}`)
             // fetch exactly 1 item per trigger — skip if no pending items
             ctx.input = await resolveInputRef(triggerInputRef, runtimeCfg)
+            console.log(`[runtime] trigger: ctx.input after resolve = ${ctx.input === null ? "null" : typeof ctx.input}`)
             if (ctx.input === null) {
               console.log(`[${fmtDate()}] [job:${jobId}] [agent:info] [scheduler] no pending items — skipping`)
               return
             }
+          } else {
+            console.log(`[runtime] trigger: no input_ref — running agent with ctx.input=${JSON.stringify(ctx.input)}`)
           }
           ctx.log = makeLogger(jobId)
           await agentRun(ctx)
@@ -1100,7 +1105,10 @@ async function resolveInputRef(
   inputRef: { type: string; value: string } | null | undefined,
   cfg: RuntimeConfig | undefined,
 ): Promise<unknown> {
-  if (!inputRef) return null
+  if (!inputRef) {
+    console.log("[runtime] resolveInputRef: no input_ref configured — ctx.input will be null")
+    return null
+  }
 
   if (inputRef.type === "dataset") {
     // derive base URL from stopped_url: .../agents/stopped → .../agents
@@ -1110,6 +1118,7 @@ async function resolveInputRef(
 
     const token = await getValidToken()
     const fetchUrl = `${base}/dataset/${inputRef.value}/next-item`
+    console.log(`[runtime] resolveInputRef: GET ${fetchUrl} (token: ${token ? token.slice(0, 20) + "..." : "none"})`)
     try {
       // atomic claim: marks item as 'processing', returns null when no pending items left
       const res = await fetch(fetchUrl, {
@@ -1118,12 +1127,17 @@ async function resolveInputRef(
           ...(token ? { Authorization: token } : {}),
         },
       })
+      const rawBody = await res.text().catch(() => "")
+      console.log(`[runtime] resolveInputRef: response ${res.status} — ${rawBody.slice(0, 500)}`)
       if (!res.ok) {
-        const body = await res.text().catch(() => "")
-        console.warn(`[runtime] resolveInputRef: dataset fetch failed (${res.status}) — ${body}`)
+        console.warn(`[runtime] resolveInputRef: dataset fetch failed (${res.status})`)
         return null
       }
-      const data = await res.json() as { success: boolean; item?: { content?: unknown; id?: number; data_path?: string; status?: string } | null }
+      let data: { success: boolean; item?: { content?: unknown; id?: number; data_path?: string; status?: string } | null }
+      try { data = JSON.parse(rawBody) } catch {
+        console.warn("[runtime] resolveInputRef: failed to parse response JSON")
+        return null
+      }
       if (!data.success) {
         console.warn("[runtime] resolveInputRef: dataset fetch returned success=false")
         return null
@@ -1132,10 +1146,15 @@ async function resolveInputRef(
         console.log(`[runtime] resolveInputRef: no pending items in dataset ${inputRef.value}`)
         return null
       }
-      console.log(`[runtime] resolveInputRef: claimed next item from dataset ${inputRef.value}`)
+      console.log(`[runtime] resolveInputRef: claimed next item from dataset ${inputRef.value} — id=${data.item.id} data_path=${data.item.data_path}`)
       // return the R2 content as ctx.input — agent receives parsed JSON directly
       // item.content is null if R2 fetch failed (agent should handle null input)
-      return data.item.content ?? null
+      if (data.item.content === null || data.item.content === undefined) {
+        console.warn(`[runtime] resolveInputRef: item claimed (id=${data.item.id}) but R2 content is null — data_path=${data.item.data_path}`)
+        return null
+      }
+      console.log(`[runtime] resolveInputRef: ctx.input resolved — ${JSON.stringify(data.item.content).slice(0, 200)}`)
+      return data.item.content
     } catch (e) {
       console.error("[runtime] resolveInputRef: failed to fetch dataset item:", e)
       return null
@@ -1151,7 +1170,9 @@ async function resolveInputRef(
  */
 function extractInputRef(config: unknown): { type: string; value: string } | null {
   const inputField = (config as { input?: { input_ref?: { type: string; value: string } } })?.input
-  return inputField?.input_ref ?? null
+  const ref = inputField?.input_ref ?? null
+  console.log(`[runtime] extractInputRef: config.input=${JSON.stringify(inputField)}, input_ref=${JSON.stringify(ref)}`)
+  return ref
 }
 
 
