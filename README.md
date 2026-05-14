@@ -35,6 +35,46 @@ npm install @lifetimesoft/agent-sdk
 
 ---
 
+## 🔨 Building Agents
+
+`@lifetimesoft/agent-sdk` includes `agent-build` — a zero-config build tool that bundles your agent into a single self-contained file compatible with both the Node.js host and Chrome Extension host.
+
+### Basic usage (most agents)
+
+```bash
+# package.json
+"build": "agent-build"
+"dev":   "agent-build --watch"
+```
+
+### Node-only agents (use Node built-ins like `fs`, `path`, `child_process`)
+
+```bash
+"build": "agent-build --platform=node"
+```
+
+### Agents with native dependencies (e.g. Playwright)
+
+```bash
+"build": "agent-build --platform=node --external:playwright"
+```
+
+### How it works
+
+`agent-build` reads `agent.json` in the current directory to find the entrypoint (`main` field) and bundles everything into a single CJS file. Defaults:
+
+| Option | Default | Description |
+|---|---|---|
+| entry | `src/index.ts` | TypeScript source entry |
+| outfile | `dist/index.js` | From `agent.json` `main` field |
+| format | `cjs` | Required by `agent-runtime` |
+| platform | `neutral` | Works on both Node and Chrome sandbox |
+| bundle | `true` | Inlines all dependencies |
+
+> **Why bundle?** The Chrome Extension sandbox has no `node_modules`. Bundling inlines all dependencies so the same `dist/index.js` runs on both Node and Chrome without modification.
+
+---
+
 ## ✨ Quick Example
 
 ```ts
@@ -526,7 +566,16 @@ Users can override any env value through the Web UI, which updates the running i
 
 ## 📋 Changelog
 
-### v0.0.21 (Latest)
+### v0.0.22
+
+**🔨 `agent-build` — zero-config build tool**
+- **NEW:** `agent-build` binary — replaces manual esbuild commands in agent projects
+- **DEFAULT:** `--platform=neutral --format=cjs --bundle` — works on both Node.js host and Chrome Extension sandbox
+- **FLAGS:** Pass-through flags supported: `--platform=node`, `--external:<pkg>`, `--watch`
+- **AUTO:** Reads `agent.json` `main` field for outfile path
+- **DEPS:** `esbuild` moved to `dependencies` (no longer needed in agent devDependencies)
+
+### v0.0.21 (Previous)
 
 **🌐 Chrome Extension Runtime (`runtime-chrome`)**
 - **NEW:** `createChromeRuntime()` — run agents inside Chrome Extension MV3 service workers

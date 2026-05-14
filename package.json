@@ -1,12 +1,13 @@
 {
     "name": "@lifetimesoft/agent-sdk",
-    "version": "0.0.21",
+    "version": "0.0.22",
     "description": "Lightweight SDK for building portable AI agents that run on the LifetimeSoft platform",
     "main": "dist/index.js",
     "module": "dist/index.mjs",
     "types": "dist/index.d.ts",
     "bin": {
-        "agent-runtime": "dist/runtime.js"
+        "agent-runtime": "dist/runtime.js",
+        "agent-build": "dist/build.js"
     },
     "publishConfig": {
         "access": "public"
@@ -81,6 +82,7 @@
         "vitest": "3.2.4"
     },
     "dependencies": {
+        "esbuild": "0.25.4",
         "ws": "^8.18.0"
     }
 }
